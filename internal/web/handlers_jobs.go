@@ -353,15 +353,45 @@ func (s *Server) processSendJob(job *Job, toSend []BrokerWithStatus, sender emai
 		remaining[i] = b.ID
 	}
 
+	// Seed the day's tally from history instead of starting at zero. `sent`
+	// counts only this run, so a job that paused at the cap and later
+	// resumed - which happens automatically on every `serve` restart, via
+	// the persisted pending_job.json - got a fresh allowance each time and
+	// could blow straight past the provider's per-day limit. The CLI
+	// already enforces the cap against a rolling 24h count of real sends
+	// (cmd_send.go); this makes the web path agree.
+	daySent := 0
+	if s.historyStore != nil {
+		// Count under activeProfile.ID, not job.ProfileID: the two differ
+		// when job.ProfileID no longer exists in config and the lookup
+		// above fell back to profiles[0]. Records are written with
+		// activeProfile.ID (below), so counting by job.ProfileID would
+		// find nothing and hand the job a fresh allowance - reintroducing
+		// the very reset this block exists to prevent.
+		n, err := s.historyStore.CountSentSince(activeProfile.ID, time.Now().Add(-24*time.Hour))
+		if err != nil {
+			// Fail closed: sending is irreversible, so if we can't tell how
+			// much has already gone out today, don't send more.
+			log.Printf("Job %s: cannot read the daily send count (%v) - pausing rather than risk exceeding the cap", job.ID, err)
+			// daySent 0, not dailyLimit: we are here precisely because the
+			// real figure is unknown, and the UI renders this number.
+			job.Pause(0, "Could not verify how many emails were already sent in the last 24 hours, so sending was paused to avoid exceeding your provider's daily limit. Check the logs and retry.")
+			s.saveJobProgress(job, remaining)
+			return
+		}
+		daySent = n
+	}
+
 	for i, b := range toSend {
 		// Check if job was cancelled
 		if job.IsCancelled() {
 			break
 		}
 
-		// Check daily limit
-		if sent >= dailyLimit {
-			job.Pause(sent, fmt.Sprintf("Daily limit of %d emails reached. Remaining %d brokers will be sent when you restart tomorrow.", dailyLimit, len(remaining)))
+		// Check daily limit against the rolling 24h total, not this run's
+		// count, so the cap survives a restart-and-resume.
+		if daySent >= dailyLimit {
+			job.Pause(daySent, fmt.Sprintf("Daily limit of %d emails reached (%d sent in the last 24 hours). Remaining %d brokers will be sent once the rolling 24-hour window clears.", dailyLimit, daySent, len(remaining)))
 			s.saveJobProgress(job, remaining)
 			log.Printf("Job paused: daily limit of %d reached, %d remaining", dailyLimit, len(remaining))
 			return
@@ -425,6 +455,7 @@ func (s *Server) processSendJob(job *Job, toSend []BrokerWithStatus, sender emai
 			record.Status = history.StatusSent
 			record.MessageID = result.MessageID
 			sent++
+			daySent++
 			job.ResetAuthFailures() // Reset on success
 		} else {
 			record.Status = history.StatusFailed

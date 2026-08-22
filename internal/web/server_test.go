@@ -8,6 +8,7 @@ import (
 
 	"github.com/eraser-privacy/eraser/internal/broker"
 	"github.com/eraser-privacy/eraser/internal/config"
+	"github.com/eraser-privacy/eraser/internal/history"
 	emaTemplate "github.com/eraser-privacy/eraser/internal/template"
 )
 
@@ -24,6 +25,24 @@ func newTestServer(t *testing.T, cfg *config.Config) *Server {
 	}
 
 	s, err := NewServer(0, cfg, "", &broker.BrokerDatabase{}, nil, tmplEngine)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	return s
+}
+
+// newTestServerWithHistory is newTestServer plus a real history store, for
+// tests that exercise behavior driven by past sends (e.g. the rolling
+// daily send cap).
+func newTestServerWithHistory(t *testing.T, cfg *config.Config, store *history.Store) *Server {
+	t.Helper()
+
+	tmplEngine, err := emaTemplate.NewEngine()
+	if err != nil {
+		t.Fatalf("template.NewEngine: %v", err)
+	}
+
+	s, err := NewServer(0, cfg, "", &broker.BrokerDatabase{}, store, tmplEngine)
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}

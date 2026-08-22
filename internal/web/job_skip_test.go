@@ -2,11 +2,15 @@ package web
 
 import (
 	"context"
+	"fmt"
+	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/eraser-privacy/eraser/internal/broker"
 	"github.com/eraser-privacy/eraser/internal/email"
+	"github.com/eraser-privacy/eraser/internal/history"
 )
 
 // recordingSender stands in for a real SMTP sender and remembers every
@@ -106,5 +110,124 @@ func TestProcessSendJobSkipsBrokersWithNoEmail(t *testing.T) {
 	}
 	if last := sender.progressSeen[1]; last != 75 {
 		t.Errorf("expected 75%% progress at the final send (1 sent + 2 skipped of 4), got %d%%", last)
+	}
+}
+
+// TestProcessSendJobDailyCapSurvivesResume pins the daily send cap to the
+// rolling 24-hour history rather than the current run's counter.
+//
+// A job that hits the cap pauses and persists its remaining brokers; the
+// server resumes it automatically on the next start. Because the cap used
+// to be checked against `sent` - which starts at 0 in every invocation of
+// processSendJob - each restart handed the job a fresh full allowance. In
+// practice that meant repeated `serve` restarts on one day sent far past
+// the configured limit and toward the provider's hard cap.
+func TestProcessSendJobDailyCapSurvivesResume(t *testing.T) {
+	store, err := history.NewStore(filepath.Join(t.TempDir(), "history.db"))
+	if err != nil {
+		t.Fatalf("history.NewStore: %v", err)
+	}
+	defer store.Close()
+
+	// Simulate a previous run today that already used up the whole cap.
+	const dailyLimit = 3
+	for i := 0; i < dailyLimit; i++ {
+		rec := &history.Record{
+			ProfileID:  "default",
+			BrokerID:   fmt.Sprintf("earlier-%d", i),
+			BrokerName: "Earlier Broker",
+			Email:      "privacy@example.com",
+			Template:   "generic",
+			Status:     history.StatusSent,
+			SentAt:     time.Now().Add(-time.Hour),
+		}
+		if err := store.Add(rec); err != nil {
+			t.Fatalf("seeding history: %v", err)
+		}
+	}
+
+	cfg := testConfig()
+	cfg.Options.RateLimitMs = 1
+	cfg.Options.Template = "generic"
+	cfg.Options.DailySendLimit = dailyLimit
+
+	s := newTestServerWithHistory(t, cfg, store)
+	s.jobPersistence = NewJobPersistence(t.TempDir())
+
+	toSend := []BrokerWithStatus{
+		{Broker: broker.Broker{ID: "next-1", Name: "Next One", Email: "a@example.com"}},
+		{Broker: broker.Broker{ID: "next-2", Name: "Next Two", Email: "b@example.com"}},
+	}
+
+	sender := &recordingSender{}
+	job := s.jobManager.Create(len(toSend), "default")
+	s.processSendJob(job, toSend, sender)
+
+	if got := sender.recipients(); len(got) != 0 {
+		t.Errorf("cap already spent in the last 24h, expected 0 sends on resume, got %d: %v", len(got), got)
+	}
+	if status := job.GetStatus(); status != JobStatusPaused {
+		t.Errorf("expected the job to pause at the cap, got status %q", status)
+	}
+}
+
+// TestProcessSendJobResumePreservesTallies pins the persisted counters
+// across a resume that sends nothing.
+//
+// processSendJob counts in per-run variables that start at zero, and used
+// to hand those straight to saveJobProgress. A resumed job that paused
+// immediately - the normal case once the daily cap is enforced against
+// history - therefore wrote sent:0 over the totals accumulated by earlier
+// runs. Observed on a real pending_job.json: 31 sent became 0.
+func TestProcessSendJobResumePreservesTallies(t *testing.T) {
+	store, err := history.NewStore(filepath.Join(t.TempDir(), "history.db"))
+	if err != nil {
+		t.Fatalf("history.NewStore: %v", err)
+	}
+	defer store.Close()
+
+	// Spend the whole cap, so the resumed job pauses before sending.
+	const dailyLimit = 2
+	for i := 0; i < dailyLimit; i++ {
+		if err := store.Add(&history.Record{
+			ProfileID: "default", BrokerID: fmt.Sprintf("earlier-%d", i),
+			BrokerName: "Earlier", Email: "privacy@example.com",
+			Template: "generic", Status: history.StatusSent,
+			SentAt: time.Now().Add(-time.Hour),
+		}); err != nil {
+			t.Fatalf("seeding history: %v", err)
+		}
+	}
+
+	cfg := testConfig()
+	cfg.Options.RateLimitMs = 1
+	cfg.Options.Template = "generic"
+	cfg.Options.DailySendLimit = dailyLimit
+
+	s := newTestServerWithHistory(t, cfg, store)
+	s.jobPersistence = NewJobPersistence(t.TempDir())
+
+	toSend := []BrokerWithStatus{
+		{Broker: broker.Broker{ID: "next-1", Name: "Next One", Email: "a@example.com"}},
+	}
+
+	// Stand in for a job resumed from disk with earlier runs' tallies.
+	job := s.jobManager.Create(10, "default")
+	job.Restore(31, 2, 5)
+
+	s.processSendJob(job, toSend, &recordingSender{})
+
+	state, err := s.jobPersistence.Load()
+	if err != nil {
+		t.Fatalf("loading persisted job state: %v", err)
+	}
+	if state.Sent != 31 {
+		t.Errorf("resume that sent nothing must not clear the tally: expected sent 31, got %d", state.Sent)
+	}
+	if state.Failed != 2 {
+		t.Errorf("expected failed 2 to survive the resume, got %d", state.Failed)
+	}
+	if state.Skipped != 5 {
+		t.Errorf("expected skipped 5 to survive the resume, got %d", state.Skipped)
 	}
 }
