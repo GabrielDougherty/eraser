@@ -30,6 +30,7 @@ type Job struct {
 	Progress        int       `json:"progress"`
 	Sent            int       `json:"sent"`
 	Failed          int       `json:"failed"`
+	Skipped         int       `json:"skipped"` // brokers with no email on file - nothing to send
 	Total           int       `json:"total"`
 	CurrentBroker   string    `json:"current_broker"`
 	CurrentBrokerID string    `json:"current_broker_id"`
@@ -58,9 +59,51 @@ func (j *Job) Update(sent, failed int, currentBroker, currentBrokerID string) {
 	j.Failed = failed
 	j.CurrentBroker = currentBroker
 	j.CurrentBrokerID = currentBrokerID
+	j.recomputeProgress()
+}
+
+// recomputeProgress recalculates the percentage from every broker the job
+// has finished with. Skipped brokers (no email on file) count as processed:
+// they advance the run even though nothing is sent for them, and leaving
+// them out stalls the bar short of 100% for the rest of the job.
+// Caller must hold j.mu.
+func (j *Job) recomputeProgress() {
 	if j.Total > 0 {
-		j.Progress = ((sent + failed) * 100) / j.Total
+		j.Progress = ((j.Sent + j.Failed + j.Skipped) * 100) / j.Total
 	}
+}
+
+// Skip records a broker the job passed over without sending, keeping the
+// progress percentage honest without inflating the failure count.
+func (j *Job) Skip(currentBroker, currentBrokerID string) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+
+	j.Skipped++
+	j.CurrentBroker = currentBroker
+	j.CurrentBrokerID = currentBrokerID
+	j.recomputeProgress()
+}
+
+// Counts returns the job's cumulative sent/failed/skipped tallies under a
+// single lock. processSendJob works in per-run counters, so it needs the
+// pre-existing totals to add to when a paused job is resumed.
+func (j *Job) Counts() (sent, failed, skipped int) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return j.Sent, j.Failed, j.Skipped
+}
+
+// Restore seeds a job with the tallies of an earlier run, for resuming a
+// job persisted across a restart.
+func (j *Job) Restore(sent, failed, skipped int) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+
+	j.Sent = sent
+	j.Failed = failed
+	j.Skipped = skipped
+	j.recomputeProgress()
 }
 
 // Complete marks the job as completed
@@ -179,6 +222,7 @@ func (j *Job) ToJSON() map[string]interface{} {
 		"progress":          j.Progress,
 		"sent":              j.Sent,
 		"failed":            j.Failed,
+		"skipped":           j.Skipped,
 		"total":             j.Total,
 		"current_broker":    j.CurrentBroker,
 		"current_broker_id": j.CurrentBrokerID,
@@ -292,6 +336,7 @@ type PersistentJobState struct {
 	Status           JobStatus `json:"status"`
 	Sent             int       `json:"sent"`
 	Failed           int       `json:"failed"`
+	Skipped          int       `json:"skipped"`
 	Total            int       `json:"total"`
 	StartedAt        time.Time `json:"started_at"`
 	RemainingBrokers []string  `json:"remaining_brokers"` // Broker IDs still to process

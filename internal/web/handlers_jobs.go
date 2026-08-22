@@ -84,7 +84,7 @@ func (s *Server) resumePendingJob(state *PersistentJobState) {
 		profileID = config.DefaultProfileID
 	}
 	job := s.jobManager.Create(state.Total, profileID)
-	job.Update(state.Sent, state.Failed, "", "")
+	job.Restore(state.Sent, state.Failed, state.Skipped)
 
 	fmt.Printf("Resuming send job: %d brokers remaining...\n", len(toSend))
 
@@ -315,6 +315,12 @@ func (s *Server) processSendJob(job *Job, toSend []BrokerWithStatus, sender emai
 	sent := 0
 	failed := 0
 
+	// A resumed job already carries the previous run's tallies; `sent` and
+	// `failed` below count only this run, so every report adds the two.
+	// Without the baseline, the first Update of a resumed run overwrites
+	// the restored totals with zero.
+	baseSent, baseFailed, _ := job.Counts()
+
 	cfg := s.getConfig()
 
 	// This runs in a background goroutine with no *http.Request to read the
@@ -356,23 +362,40 @@ func (s *Server) processSendJob(job *Job, toSend []BrokerWithStatus, sender emai
 		// Check daily limit
 		if sent >= dailyLimit {
 			job.Pause(sent, fmt.Sprintf("Daily limit of %d emails reached. Remaining %d brokers will be sent when you restart tomorrow.", dailyLimit, len(remaining)))
-			s.saveJobProgress(job, sent, failed, remaining)
+			s.saveJobProgress(job, remaining)
 			log.Printf("Job paused: daily limit of %d reached, %d remaining", dailyLimit, len(remaining))
 			return
 		}
 
 		// Update current broker
-		job.Update(sent, failed, b.Name, b.ID)
+		job.Update(baseSent+sent, baseFailed+failed, b.Name, b.ID)
+
+		// Brokers with no email on file have nothing to send to. The CLI
+		// (cmd_send.go) and the single-broker web send (handleAPISendOne
+		// above) both skip these; this bulk path used to fall straight
+		// through to sender.Send with an empty To, which the SMTP layer
+		// rejects as "invalid email format: mail: no address". That
+		// manufactured a failed history record per broker - polluting the
+		// stats and, worse, parking them in the Retry Failed queue where
+		// every retry re-fails forever. They belong in the manual
+		// follow-up queue (the brokers page's "missing email only"
+		// filter), not in the failure count.
+		if strings.TrimSpace(b.Email) == "" {
+			job.Skip(b.Name, b.ID)
+			remaining = remaining[1:]
+			s.saveJobProgress(job, remaining)
+			continue
+		}
 
 		// Generate email using the user's configured template (see the
 		// same fix/comment in handleAPISendOne above)
 		rendered, err := s.tmplEngine.Render(cfg.Options.Template, activeProfile.Profile, b.Broker)
 		if err != nil {
 			failed++
-			job.Update(sent, failed, b.Name, b.ID)
+			job.Update(baseSent+sent, baseFailed+failed, b.Name, b.ID)
 			// Remove from remaining even on failure
 			remaining = remaining[1:]
-			s.saveJobProgress(job, sent, failed, remaining)
+			s.saveJobProgress(job, remaining)
 			continue
 		}
 
@@ -420,7 +443,7 @@ func (s *Server) processSendJob(job *Job, toSend []BrokerWithStatus, sender emai
 						_ = s.historyStore.Add(record)
 					}
 					remaining = remaining[1:]
-					s.saveJobProgress(job, sent, failed, remaining)
+					s.saveJobProgress(job, remaining)
 					job.StopWithError("auth", "Stopped due to repeated authentication failures. Your email provider may have rate-limited or blocked your account. Please check your email settings and try again later.")
 					log.Printf("Job stopped: repeated auth failures after %d sent, %d failed", sent, failed)
 					return
@@ -433,11 +456,11 @@ func (s *Server) processSendJob(job *Job, toSend []BrokerWithStatus, sender emai
 		}
 
 		// Update job progress
-		job.Update(sent, failed, b.Name, b.ID)
+		job.Update(baseSent+sent, baseFailed+failed, b.Name, b.ID)
 
 		// Remove processed broker from remaining and save state
 		remaining = remaining[1:]
-		s.saveJobProgress(job, sent, failed, remaining)
+		s.saveJobProgress(job, remaining)
 
 		// Rate limit delay (skip on last item)
 		if i < len(toSend)-1 && !job.IsCancelled() {
@@ -452,14 +475,21 @@ func (s *Server) processSendJob(job *Job, toSend []BrokerWithStatus, sender emai
 	}
 }
 
-// saveJobProgress saves the current job progress to disk
-func (s *Server) saveJobProgress(job *Job, sent, failed int, remaining []string) {
+// saveJobProgress persists the job's current tallies and what's left to do.
+// The counts are read off the job rather than passed in: callers work in
+// per-run counters that restart at zero on every resume, and passing those
+// straight through wiped the accumulated totals from the persisted state
+// (a resumed job that paused immediately wrote sent:0 over a real 31).
+// Call job.Update/job.Skip first, then this.
+func (s *Server) saveJobProgress(job *Job, remaining []string) {
+	sent, failed, skipped := job.Counts()
 	state := &PersistentJobState{
 		ID:               job.ID,
 		ProfileID:        job.ProfileID,
 		Status:           job.GetStatus(),
 		Sent:             sent,
 		Failed:           failed,
+		Skipped:          skipped,
 		Total:            job.Total,
 		StartedAt:        job.StartedAt,
 		RemainingBrokers: remaining,
