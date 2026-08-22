@@ -661,11 +661,16 @@ func (s *Server) renderWithCSRF(w http.ResponseWriter, r *http.Request, name str
 	// Every page gets the profile switcher's data, regardless of whether the
 	// handler itself needed the active profile - Profiles has length 1 for a
 	// single-profile config, in which case layout.html hides the switcher.
+	// These keys are always set, even with no config loaded yet: the setup
+	// wizard renders the same layout, and a missing key makes the layout's
+	// `len .Profiles` fail at render time.
+	var profiles []config.NamedProfile
 	if cfg := s.getConfig(); cfg != nil {
-		data["Profiles"] = cfg.GetProfiles()
-		data["ActiveProfile"] = s.activeProfile(r)
-		data["CurrentPath"] = r.URL.Path
+		profiles = cfg.GetProfiles()
 	}
+	data["Profiles"] = profiles
+	data["ActiveProfile"] = s.activeProfile(r)
+	data["CurrentPath"] = r.URL.Path
 
 	tmpl, ok := s.templates[name]
 	if !ok {
