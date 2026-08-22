@@ -45,10 +45,22 @@ func (s *Server) handleSetupProfile(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Session error", http.StatusInternalServerError)
 			return
 		}
-		s.updateSession(r, func(sess *Session) {
+		// Update by the ID returned above, not via updateSession(r, ...):
+		// on the first POST the session was just created, so its cookie
+		// only exists on the response - r still carries no session cookie
+		// and a cookie-keyed update would silently no-op, leaving the
+		// profile unsaved and bouncing /setup/email back to this step.
+		if !s.sessions.Update(session.ID, func(sess *Session) {
 			sess.Step = "email"
 			sess.Profile = profile
-		})
+		}) {
+			// Only reachable if the session expired between being created
+			// above and being written here. Fail loudly rather than
+			// redirecting to /setup/email, which would silently bounce
+			// back here with the form cleared.
+			http.Error(w, "Session expired, please try again", http.StatusInternalServerError)
+			return
+		}
 		http.Redirect(w, r, "/setup/email", http.StatusFound)
 		return
 	}

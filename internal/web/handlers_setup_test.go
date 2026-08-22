@@ -3,6 +3,7 @@ package web
 import (
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -38,5 +39,65 @@ func TestSetupRendersWithoutConfig(t *testing.T) {
 		if !strings.Contains(body, "</html>") {
 			t.Errorf("%s: page truncated mid-render, got %d bytes", path, len(body))
 		}
+	}
+}
+
+// TestSetupProfilePostPersistsToNewSession pins the first POST of the
+// wizard, where the session is created during that same request. The
+// handler used to save the profile with updateSession(r, ...), which keys
+// off the request's session cookie - but on this request the cookie exists
+// only on the response, so the update silently no-opped, the profile was
+// never stored, and /setup/email bounced straight back to /setup/profile:
+// the wizard could never advance past step 2.
+func TestSetupProfilePostPersistsToNewSession(t *testing.T) {
+	s := newTestServer(t, nil)
+
+	form := url.Values{
+		"first_name": {"Anna"},
+		"last_name":  {"Popena"},
+		"email":      {"anna@example.com"},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/setup/profile", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	s.handleSetupProfile(rec, req)
+
+	if rec.Code != http.StatusFound {
+		t.Fatalf("expected 302, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if loc := rec.Header().Get("Location"); loc != "/setup/email" {
+		t.Fatalf("expected redirect to /setup/email, got %q", loc)
+	}
+
+	// Replay the response's session cookie the way a browser would.
+	res := rec.Result()
+	defer res.Body.Close()
+	var sessionCookie *http.Cookie
+	for _, c := range res.Cookies() {
+		if c.Name == "eraser_session" {
+			sessionCookie = c
+		}
+	}
+	if sessionCookie == nil {
+		t.Fatal("no eraser_session cookie set on the profile POST response")
+	}
+
+	session := s.sessions.Get(sessionCookie.Value)
+	if session == nil {
+		t.Fatal("session cookie points at no stored session")
+	}
+	if session.Profile.FirstName != "Anna" || session.Profile.Email != "anna@example.com" {
+		t.Fatalf("profile not stored in session: %+v", session.Profile)
+	}
+
+	// The next step must now render rather than redirect back to step 2.
+	emailReq := httptest.NewRequest(http.MethodGet, "/setup/email", nil)
+	emailReq.AddCookie(sessionCookie)
+	emailRec := httptest.NewRecorder()
+	s.handleSetupEmail(emailRec, emailReq)
+
+	if emailRec.Code != http.StatusOK {
+		t.Fatalf("/setup/email: expected 200, got %d (Location: %q)",
+			emailRec.Code, emailRec.Header().Get("Location"))
 	}
 }
