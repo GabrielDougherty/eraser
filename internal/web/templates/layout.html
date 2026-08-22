@@ -264,8 +264,18 @@
             background: rgba(239, 68, 68, 0.2);
         }
 
-        /* Form inputs */
-        .input {
+        /* Form inputs.
+           The element-qualified selectors are load-bearing, not redundant:
+           the Tailwind runtime above bundles the forms plugin, whose base
+           styles ([type="text"], textarea, select - a light-theme white
+           fill, gray border and square corners) have the same specificity
+           as a bare .input but are injected into the document later, so
+           they'd win the cascade. Qualifying by element adds the one point
+           of specificity needed to keep the dark theme on form controls. */
+        .input,
+        input.input,
+        select.input,
+        textarea.input {
             width: 100%;
             padding: 8px 12px;
             background: var(--bg-elevated);
@@ -276,13 +286,18 @@
             transition: all 0.15s ease;
         }
 
-        .input:focus {
+        .input:focus,
+        input.input:focus,
+        select.input:focus,
+        textarea.input:focus {
             outline: none;
             border-color: var(--accent);
             box-shadow: 0 0 0 3px var(--accent-muted);
         }
 
-        .input::placeholder {
+        .input::placeholder,
+        input.input::placeholder,
+        textarea.input::placeholder {
             color: var(--text-muted);
         }
 
