@@ -2691,8 +2691,12 @@ brokers:
       category: marketing
     - id: knowwho
       name: Knowwho
-      email: bbrownson@knowwho.com
-      website: https://www.knowwho.com/
+      # KnowWho was acquired by Quorum; the old bbrownson@knowwho.com was a
+      # named individual's mailbox (their GM), who has since left. Quorum's
+      # privacy policy names info@quorum.us as the contact for both limiting
+      # disclosure and deletion requests, for US and EU alike.
+      email: info@quorum.us
+      website: https://kw1.knowwho.com/
       region: us
       category: marketing
     - id: kochava
