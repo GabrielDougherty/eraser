@@ -71,7 +71,7 @@ func TestSetupProfilePostPersistsToNewSession(t *testing.T) {
 
 	// Replay the response's session cookie the way a browser would.
 	res := rec.Result()
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	var sessionCookie *http.Cookie
 	for _, c := range res.Cookies() {
 		if c.Name == "eraser_session" {

@@ -127,7 +127,7 @@ func TestProcessSendJobDailyCapSurvivesResume(t *testing.T) {
 	if err != nil {
 		t.Fatalf("history.NewStore: %v", err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// Simulate a previous run today that already used up the whole cap.
 	const dailyLimit = 3
@@ -184,7 +184,7 @@ func TestProcessSendJobResumePreservesTallies(t *testing.T) {
 	if err != nil {
 		t.Fatalf("history.NewStore: %v", err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// Spend the whole cap, so the resumed job pauses before sending.
 	const dailyLimit = 2
