@@ -123,13 +123,17 @@ func TestSubmitButtonTextPattern_MirrorsJSRegex(t *testing.T) {
 	}
 }
 
-// requireChrome creates a Browser and probes it with a trivial navigation to
-// confirm a real Chrome/Chromium binary is actually launchable in this
-// environment. chromedp.NewExecAllocator/NewContext (called from New) don't
-// spawn a browser process by themselves -- the process only launches lazily
-// on the first chromedp.Run -- so this is the earliest point a missing-Chrome
-// environment can be detected. Tests that need a live browser call this and
-// get a Browser back, or the test is skipped cleanly.
+// requireChrome creates a Browser and forces it to allocate, confirming a real
+// Chrome/Chromium binary is actually launchable in this environment.
+// chromedp.NewExecAllocator/NewContext (called from New) don't spawn a browser
+// process by themselves -- the process only launches lazily on the first
+// chromedp.Run -- so this is the earliest point a missing-Chrome environment
+// can be detected. Tests that need a live browser call this and get a Browser
+// back, or the test is skipped cleanly.
+//
+// The browser chromedp starts here is fully isolated from any Chrome the
+// developer already has open: New sets no user-data-dir, so chromedp creates a
+// throwaway profile and takes an ephemeral debugging port.
 func requireChrome(t *testing.T) *Browser {
 	t.Helper()
 
@@ -142,9 +146,20 @@ func requireChrome(t *testing.T) *Browser {
 		t.Skipf("browser.New failed, skipping Chrome-dependent test: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(b.ctx, 10*time.Second)
-	defer cancel()
-	if err := chromedp.Run(ctx, chromedp.Navigate("about:blank")); err != nil {
+	// Allocate on b.ctx itself, never on a child carrying a deadline.
+	// chromedp binds the Chrome process to the context given to the *first*
+	// Run (allocate.go passes it straight to exec.CommandContext), so probing
+	// under a context.WithTimeout and deferring its cancel killed the browser
+	// the instant this helper returned - and cascaded into cancelling b.ctx
+	// too, leaving every later Run to fail with "context canceled". chromedp's
+	// own docs call a timeout on the first Run "a bad idea" for this reason.
+	//
+	// A Run with no actions performs the whole allocate/connect/attach and
+	// nothing else, which is how chromedp's own tests force a browser to
+	// start. It needs no deadline of its own: a missing binary fails
+	// immediately from exec.Start, and a Chrome that starts without ever
+	// announcing itself is bounded by chromedp's WSURLReadTimeout.
+	if err := chromedp.Run(b.ctx); err != nil {
 		b.Close()
 		t.Skipf("no usable Chrome/Chromium binary in this environment, skipping: %v", err)
 	}
