@@ -85,13 +85,24 @@ func extractDomain(url string) string {
 	return ""
 }
 
+// imapDialTLS is the dialer Connect uses. It exists so tests can point the
+// connection at an in-process IMAP server holding a self-signed
+// certificate, which is otherwise unreachable: passing a nil *tls.Config
+// below means full verification against the system trust store, so neither
+// a fake nor a container can be connected to without it.
+//
+// Deliberately unexported and never assigned outside tests - this must not
+// become a "skip certificate checks" switch reachable from config in a tool
+// that holds a live mail credential.
+var imapDialTLS = client.DialTLS
+
 // Connect establishes IMAP connection
 func (m *Monitor) Connect(ctx context.Context) error {
 	addr := fmt.Sprintf("%s:%d", m.config.Server, m.config.Port)
 
 	log.Printf("Connecting to IMAP server %s...", addr)
 
-	c, err := client.DialTLS(addr, nil)
+	c, err := imapDialTLS(addr, nil)
 	if err != nil {
 		return fmt.Errorf("failed to connect to IMAP server: %w", err)
 	}

@@ -61,8 +61,19 @@ func sanitizeSMTPError(err error) error {
 	return fmt.Errorf("SMTP error: check your configuration")
 }
 
+// tlsDial is the TLS dialer sendWithTLS uses. It exists so tests can point
+// the connection at an in-process server holding a self-signed certificate,
+// which is otherwise impossible: the config below verifies against the
+// system trust store, so no fake and no container can be reached without it.
+//
+// Deliberately unexported and never assigned outside tests - this must not
+// be able to become a "skip certificate checks" switch reachable from
+// config or a flag in a tool that carries a live mail credential. The
+// stdlib uses the same idiom (net/smtp's testHookStartTLS).
+var tlsDial = tls.Dial
+
 func (s *SMTPSender) sendWithTLS(addr string, auth smtp.Auth, from, to string, msg []byte) error {
-	conn, err := tls.Dial("tcp", addr, &tls.Config{
+	conn, err := tlsDial("tcp", addr, &tls.Config{
 		ServerName: s.config.Host,
 		MinVersion: tls.VersionTLS12,
 	})
