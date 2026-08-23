@@ -40,7 +40,12 @@ func (s *Server) checkPendingJob() {
 func (s *Server) resumePendingJob(state *PersistentJobState) {
 	// Wait a moment for the server to fully start
 	time.Sleep(2 * time.Second)
+	s.resumeJob(state)
+}
 
+// resumeJob is resumePendingJob without the startup delay, so the resume
+// path itself can be exercised without waiting on a timer.
+func (s *Server) resumeJob(state *PersistentJobState) {
 	cfg := s.getConfig()
 	if cfg == nil || cfg.Email.Provider == "" {
 		log.Printf("Cannot resume job: email not configured")
@@ -84,12 +89,43 @@ func (s *Server) resumePendingJob(state *PersistentJobState) {
 		profileID = config.DefaultProfileID
 	}
 	job := s.jobManager.Create(state.Total, profileID)
-	job.Restore(state.Sent, state.Failed, state.Skipped)
+	job.Restore(reconcileTallies(state, len(toSend)))
 
 	fmt.Printf("Resuming send job: %d brokers remaining...\n", len(toSend))
 
 	// Process remaining brokers
 	s.processSendJob(job, toSend, sender)
+}
+
+// reconcileTallies works out where a resumed job actually is.
+//
+// The persisted per-outcome counters are the weaker source of truth: they
+// have been wrong in practice (a resume that paused immediately used to
+// write sent:0 over a real count), and a job persisted by an older build may
+// predate the skipped counter entirely. What is always reliable is the
+// remaining-broker list, because it is what the run is about to work
+// through: everything not in it has been dealt with.
+//
+// So the total processed comes from the list, and the persisted counters
+// only decide how that total splits across sent/failed/skipped. When they
+// disagree with the list, the difference is credited to sent - the outcome
+// that actually happened for the overwhelming majority of brokers, and the
+// one a user is looking for when they glance at the progress bar.
+//
+// This is display only. What gets sent is decided entirely by the remaining
+// list, and never by these numbers.
+func reconcileTallies(state *PersistentJobState, remaining int) (sent, failed, skipped int) {
+	processed := state.Total - remaining
+	if processed < 0 {
+		processed = 0
+	}
+
+	failed, skipped = state.Failed, state.Skipped
+	if failed+skipped > processed {
+		// Nonsense input; trust the list and give up on the split.
+		return processed, 0, 0
+	}
+	return processed - failed - skipped, failed, skipped
 }
 
 func (s *Server) handleAPISendOne(w http.ResponseWriter, r *http.Request) {
