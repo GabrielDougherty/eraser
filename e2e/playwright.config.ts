@@ -1,6 +1,6 @@
 import { defineConfig } from "@playwright/test";
 import { buildBinary } from "./support/build";
-import { binaryPath, brokerFixture, createWorkspace, isPrimaryProcess } from "./support/workspace";
+import { binaryPath, brokerFixture, createWorkspace, isPrimaryProcess, shellQuote } from "./support/workspace";
 
 // Both happen at config-load time, which is before Playwright launches
 // webServer. The workspace is handed to the specs and the server through the
@@ -41,6 +41,8 @@ export default defineConfig({
     screenshot: "only-on-failure",
   },
   webServer: {
+    // Quoted, not merely joined: this string is run through a shell, so an
+    // unquoted path containing a space silently becomes two arguments.
     command: [
       binaryPath,
       "--config", workspace.configPath,
@@ -49,7 +51,7 @@ export default defineConfig({
       "serve",
       "--port", String(port),
       "--no-browser",
-    ].join(" "),
+    ].map(shellQuote).join(" "),
     // /setup returns 200 with no config present; / would 302 away.
     url: `${baseURL}/setup`,
     // Never reuse. A server left over from an earlier run already has a
@@ -65,6 +67,7 @@ export default defineConfig({
       ERASER_NO_BROWSER: "1",
     },
   },
-  // Also exported to the test processes themselves.
+  // Reporter metadata only - specs read the workspace from the environment.
+  // Recorded here so an HTML report says which run produced it.
   metadata: { workspace: workspace.dir },
 });

@@ -88,6 +88,8 @@ test("the dashboard is reachable once configured", async ({ page }) => {
   await expect(page).toHaveURL(/127\.0\.0\.1:\d+\/$/);
   await expect(page.getByText(`Welcome back, ${PROFILE.firstName}`)).toBeVisible();
 
-  // The fixture, not the shipped 763-broker database.
-  await expect(page.getByText("763")).toHaveCount(0);
+  // Positively assert the fixture is in use. Checking merely that "763" is
+  // absent would also pass if the page failed to render a count at all.
+  await expect(page.getByText("Total Brokers")).toBeVisible();
+  await expect(page.locator("a[href='/brokers']").getByText("6", { exact: true })).toBeVisible();
 });

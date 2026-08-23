@@ -41,8 +41,10 @@ from-scratch premise; a leftover `pending_job.json` makes the server
 auto-resume a send two seconds after boot. For the same reason
 `reuseExistingServer` is `false` even locally.
 
-Artifacts are kept on failure — open `.artifacts/<timestamp>/captured/` to read
-the actual emails a failing run produced.
+Workspaces are kept after the run — open `.artifacts/<timestamp>/captured/` to
+read the actual emails a run produced, which is usually the fastest way to
+understand a failure. The last few runs are retained and older ones are pruned
+automatically, so this directory doesn't grow without bound.
 
 ## Capture mode
 

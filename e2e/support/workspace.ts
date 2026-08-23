@@ -1,4 +1,4 @@
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -25,6 +25,24 @@ export interface Workspace {
   captureDir: string;
 }
 
+/**
+ * How many past runs to keep under .artifacts. Failed runs are worth keeping
+ * so the captured mail can be inspected, but every run leaves a workspace
+ * behind and nothing else ever removes them.
+ */
+const keepWorkspaces = 5;
+
+function pruneOldWorkspaces(root: string): void {
+  if (!existsSync(root)) return;
+  const runs = readdirSync(root, { withFileTypes: true })
+    .filter((e) => e.isDirectory())
+    .map((e) => e.name)
+    .sort(); // timestamped names sort chronologically
+  for (const name of runs.slice(0, Math.max(0, runs.length - keepWorkspaces + 1))) {
+    rmSync(path.join(root, name), { recursive: true, force: true });
+  }
+}
+
 export function createWorkspace(): Workspace {
   // Playwright loads this config once in the main process and again in every
   // worker, so minting a fresh timestamped directory unconditionally would
@@ -35,8 +53,11 @@ export function createWorkspace(): Workspace {
   const existing = process.env.ERASER_E2E_WORKSPACE;
   if (existing) return workspaceAt(existing);
 
+  const artifacts = path.join(e2eRoot, ".artifacts");
+  pruneOldWorkspaces(artifacts);
+
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const dir = path.join(e2eRoot, ".artifacts", stamp);
+  const dir = path.join(artifacts, stamp);
   mkdirSync(dir, { recursive: true });
   process.env.ERASER_E2E_WORKSPACE = dir;
   return workspaceAt(dir);
@@ -68,8 +89,20 @@ export function workspaceFromEnv(): Workspace {
   return workspaceAt(dir);
 }
 
+/**
+ * Quotes one argument for the shell.
+ *
+ * Playwright's webServer.command is a single string run through /bin/sh, so
+ * joining argv with spaces breaks the moment any path contains one - and on
+ * macOS a home or project directory with a space in it is entirely ordinary.
+ * The failure is a baffling `/bin/sh: /Users/My: No such file or directory`.
+ */
+export function shellQuote(arg: string): string {
+  return `'${arg.replaceAll("'", `'\\''`)}'`;
+}
+
 /** Absolute path to the broker fixture, independent of the server's cwd. */
 export const brokerFixture = path.join(e2eRoot, "fixtures", "brokers.yaml");
 
-/** Where globalSetup puts the compiled binary. */
+/** Where support/build.ts puts the compiled binary. */
 export const binaryPath = process.env.ERASER_E2E_BIN ?? path.join(e2eRoot, ".bin", "eraser");

@@ -1,5 +1,11 @@
 import { expect, test } from "@playwright/test";
-import { bodyFor, capturedFiles, capturedRecipients, readManifest } from "../support/captured";
+import {
+  bodyFor,
+  capturedFiles,
+  capturedRecipients,
+  readCapturedBody,
+  readManifest,
+} from "../support/captured";
 import { PROFILE, ensureSetupComplete } from "../support/setup";
 import { workspaceFromEnv } from "../support/workspace";
 
@@ -148,7 +154,11 @@ test("every captured message is well formed and addressed to its own broker", as
   expect(captured.map((m) => m.seq)).toEqual([1, 2, 3, 4, 5]);
 
   for (const message of captured) {
-    const raw = bodyFor(ws.captureDir, message.to);
+    // Read by the message's own file, not by recipient: bodyFor returns the
+    // first match for an address, so iterating messages while looking them up
+    // by recipient would check one file twice and another never as soon as any
+    // address repeats - which a re-send test would do immediately.
+    const raw = readCapturedBody(ws.captureDir, message.file);
     expect(raw.startsWith("From: ")).toBe(true);
     expect(raw).toContain("MIME-Version: 1.0");
     // Header/body separator.
