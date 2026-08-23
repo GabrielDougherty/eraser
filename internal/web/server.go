@@ -114,9 +114,10 @@ type Server struct {
 	rateLimiter    *RateLimiter
 	jobManager     *JobManager
 	jobPersistence *JobPersistence
+	noBrowser      bool
 }
 
-func NewServer(port int, cfg *config.Config, configPath string, brokerDB *broker.BrokerDatabase, historyStore *history.Store, tmplEngine *emaTemplate.Engine) (*Server, error) {
+func NewServer(port int, cfg *config.Config, configPath string, brokerDB *broker.BrokerDatabase, historyStore *history.Store, tmplEngine *emaTemplate.Engine, opts ...Option) (*Server, error) {
 	csrfKey := make([]byte, 32)
 	if _, err := rand.Read(csrfKey); err != nil {
 		return nil, fmt.Errorf("failed to generate CSRF key: %w", err)
@@ -146,6 +147,10 @@ func NewServer(port int, cfg *config.Config, configPath string, brokerDB *broker
 		jobPersistence: NewJobPersistence(dataDir),
 	}
 	s.config.Store(cfg)
+
+	for _, opt := range opts {
+		opt(s)
+	}
 
 	tmpl, err := s.parseTemplates()
 	if err != nil {
@@ -302,14 +307,21 @@ func (s *Server) Start() error {
 	// Check for pending job and offer to resume
 	s.checkPendingJob()
 
-	// Open browser after a short delay
-	go func() {
-		time.Sleep(500 * time.Millisecond)
-		url := fmt.Sprintf("http://localhost:%d", s.port)
-		openBrowser(url)
-	}()
+	// Open browser after a short delay. Skipped entirely (rather than
+	// calling a no-op openBrowser) when disabled, so nothing is ever
+	// spawned - see WithNoBrowser.
+	if !s.noBrowser {
+		go func() {
+			time.Sleep(500 * time.Millisecond)
+			url := fmt.Sprintf("http://127.0.0.1:%d", s.port)
+			openBrowser(url)
+		}()
+	}
 
-	fmt.Printf("Starting Eraser web UI at http://localhost:%d\n", s.port)
+	// 127.0.0.1, not localhost: ListenAndServe binds IPv4 loopback only, so
+	// on hosts where localhost resolves to ::1 first the printed URL refuses
+	// to connect.
+	fmt.Printf("Starting Eraser web UI at http://127.0.0.1:%d\n", s.port)
 	fmt.Println("Press Ctrl+C to stop")
 
 	if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {

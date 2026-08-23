@@ -18,6 +18,7 @@ import (
 
 func serveCmd() *cobra.Command {
 	var port int
+	var noBrowser bool
 
 	cmd := &cobra.Command{
 		Use:   "serve",
@@ -32,16 +33,17 @@ This opens a visual dashboard where you can:
 
 The server runs locally on your machine - no data is sent to external servers.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runServe(port)
+			return runServe(port, noBrowser || os.Getenv("ERASER_NO_BROWSER") != "")
 		},
 	}
 
 	cmd.Flags().IntVar(&port, "port", 8080, "Port to listen on")
+	cmd.Flags().BoolVar(&noBrowser, "no-browser", false, "Don't open a browser window on startup (also set by ERASER_NO_BROWSER)")
 
 	return cmd
 }
 
-func runServe(port int) error {
+func runServe(port int, noBrowser bool) error {
 	configPath := resolveConfigPath()
 	var cfg *config.Config
 	if _, err := os.Stat(configPath); err == nil {
@@ -72,7 +74,12 @@ func runServe(port int) error {
 	}
 
 	// Create and start web server
-	server, err := web.NewServer(port, cfg, configPath, brokerDB, store, tmplEngine)
+	var opts []web.Option
+	if noBrowser {
+		opts = append(opts, web.WithNoBrowser())
+	}
+
+	server, err := web.NewServer(port, cfg, configPath, brokerDB, store, tmplEngine, opts...)
 	if err != nil {
 		return fmt.Errorf("failed to create web server: %w", err)
 	}

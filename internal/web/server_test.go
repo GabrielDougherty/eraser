@@ -16,7 +16,7 @@ import (
 // need a real broker file, history database, or HTTP listener. It exercises
 // the real NewServer constructor (including template parsing) so tests stay
 // honest about what construction actually requires.
-func newTestServer(t *testing.T, cfg *config.Config) *Server {
+func newTestServer(t *testing.T, cfg *config.Config, opts ...Option) *Server {
 	t.Helper()
 
 	tmplEngine, err := emaTemplate.NewEngine()
@@ -24,7 +24,7 @@ func newTestServer(t *testing.T, cfg *config.Config) *Server {
 		t.Fatalf("template.NewEngine: %v", err)
 	}
 
-	s, err := NewServer(0, cfg, "", &broker.BrokerDatabase{}, nil, tmplEngine)
+	s, err := NewServer(0, cfg, "", &broker.BrokerDatabase{}, nil, tmplEngine, opts...)
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
