@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -128,5 +129,254 @@ func TestSlugifyID(t *testing.T) {
 				t.Errorf("SlugifyID(%q) = %q, want %q", tt.in, got, tt.want)
 			}
 		})
+	}
+}
+
+// ==================== Profile resolution ====================
+//
+// GetProfiles and GetProfile decide *whose* removal requests get sent and
+// whose send history is read. Resolving to the wrong profile means emailing
+// brokers on behalf of one household member using another's identity, and
+// recording it against the wrong history. The web UI's profile switcher, the
+// --profile flag, and every history query all funnel through here.
+
+func TestGetProfilesWrapsTheLegacyBlock(t *testing.T) {
+	// A config predating multi-profile support has a single top-level
+	// profile: block and no profiles: list. It must keep working untouched,
+	// presented as one profile under the same id that pre-migration history
+	// rows were backfilled to.
+	cfg := &Config{Profile: Profile{FirstName: "Solo", LastName: "User", Email: "solo@example.com"}}
+
+	profiles := cfg.GetProfiles()
+	if len(profiles) != 1 {
+		t.Fatalf("expected 1 synthesized profile, got %d", len(profiles))
+	}
+	if profiles[0].ID != DefaultProfileID {
+		t.Errorf("synthesized profile id = %q, want %q; history rows are keyed on this", profiles[0].ID, DefaultProfileID)
+	}
+	if profiles[0].FirstName != "Solo" || profiles[0].Email != "solo@example.com" {
+		t.Errorf("the legacy profile block was not carried over: %+v", profiles[0])
+	}
+}
+
+func TestGetProfilesPrefersTheListOverTheLegacyBlock(t *testing.T) {
+	cfg := &Config{
+		Profile: Profile{FirstName: "Legacy", LastName: "Ignored", Email: "legacy@example.com"},
+		Profiles: []NamedProfile{
+			{ID: "me", Profile: Profile{FirstName: "Me", LastName: "Here", Email: "me@example.com"}},
+			{ID: "spouse", Profile: Profile{FirstName: "Spouse", LastName: "Here", Email: "spouse@example.com"}},
+		},
+	}
+
+	profiles := cfg.GetProfiles()
+	if len(profiles) != 2 {
+		t.Fatalf("expected the profiles list, got %d entries", len(profiles))
+	}
+	for _, p := range profiles {
+		if p.FirstName == "Legacy" {
+			t.Error("the legacy profile block leaked in alongside the profiles list")
+		}
+	}
+}
+
+func TestGetProfileByID(t *testing.T) {
+	cfg := &Config{Profiles: []NamedProfile{
+		{ID: "me", Profile: Profile{FirstName: "Me", LastName: "Here", Email: "me@example.com"}},
+		{ID: "spouse", Profile: Profile{FirstName: "Spouse", LastName: "Here", Email: "spouse@example.com"}},
+	}}
+
+	got, err := cfg.GetProfile("spouse")
+	if err != nil {
+		t.Fatalf("GetProfile(spouse): %v", err)
+	}
+	if got.FirstName != "Spouse" {
+		t.Errorf("resolved to the wrong profile: %+v", got)
+	}
+
+	// The web UI's switcher cookie and the --profile flag both carry
+	// user-typed text, so matching is case-insensitive.
+	upper, err := cfg.GetProfile("SPOUSE")
+	if err != nil {
+		t.Fatalf("GetProfile(SPOUSE): %v", err)
+	}
+	if upper.ID != "spouse" {
+		t.Errorf("case-insensitive lookup resolved to %q", upper.ID)
+	}
+}
+
+func TestGetProfileEmptyIDIsAmbiguousOnlyWithSeveral(t *testing.T) {
+	single := &Config{Profile: Profile{FirstName: "Solo", LastName: "User", Email: "solo@example.com"}}
+	got, err := single.GetProfile("")
+	if err != nil {
+		t.Fatalf("an empty id must resolve when only one profile exists: %v", err)
+	}
+	if got.ID != DefaultProfileID {
+		t.Errorf("resolved to %q", got.ID)
+	}
+
+	// With more than one, guessing would mean silently sending as the wrong
+	// person, so this must be an error rather than a default.
+	several := &Config{Profiles: []NamedProfile{
+		{ID: "me", Profile: Profile{FirstName: "Me", LastName: "Here", Email: "me@example.com"}},
+		{ID: "spouse", Profile: Profile{FirstName: "Spouse", LastName: "Here", Email: "spouse@example.com"}},
+	}}
+	_, err = several.GetProfile("")
+	if err == nil {
+		t.Fatal("an empty id with several profiles must not silently pick one")
+	}
+	// The message has to name the choices or the user cannot act on it.
+	for _, want := range []string{"me", "spouse", "--profile"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error should mention %q, got: %v", want, err)
+		}
+	}
+}
+
+func TestGetProfileUnknownIDListsTheAvailableOnes(t *testing.T) {
+	cfg := &Config{Profiles: []NamedProfile{
+		{ID: "me", Profile: Profile{FirstName: "Me", LastName: "Here", Email: "me@example.com"}},
+		{ID: "spouse", Profile: Profile{FirstName: "Spouse", LastName: "Here", Email: "spouse@example.com"}},
+	}}
+
+	_, err := cfg.GetProfile("nobody")
+	if err == nil {
+		t.Fatal("expected an error for an unknown profile id")
+	}
+	for _, want := range []string{"nobody", "me", "spouse"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error should mention %q, got: %v", want, err)
+		}
+	}
+}
+
+func TestFullName(t *testing.T) {
+	cases := map[string]struct {
+		profile Profile
+		want    string
+	}{
+		"without a middle name": {Profile{FirstName: "Ada", LastName: "Lovelace"}, "Ada Lovelace"},
+		"with a middle name":    {Profile{FirstName: "Ada", MiddleName: "King", LastName: "Lovelace"}, "Ada King Lovelace"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			// This string goes into the body of every removal request, so a
+			// stray double space is visible to every broker.
+			if got := tc.profile.FullName(); got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// ==================== Validation ====================
+
+func validConfig() *Config {
+	return &Config{
+		Profile: Profile{FirstName: "Test", LastName: "User", Email: "test@example.com"},
+		Email: EmailConfig{
+			Provider: "smtp",
+			From:     "test@example.com",
+			SMTP:     SMTPConfig{Host: "smtp.example.com", Port: 465, UseTLS: true},
+		},
+	}
+}
+
+func TestValidateAcceptsAGoodConfig(t *testing.T) {
+	if err := validConfig().Validate(); err != nil {
+		t.Fatalf("a complete config was rejected: %v", err)
+	}
+}
+
+func TestValidateRejectsIncompleteConfigs(t *testing.T) {
+	cases := map[string]struct {
+		mutate func(*Config)
+		want   string
+	}{
+		"missing first name": {func(c *Config) { c.Profile.FirstName = "" }, "first_name"},
+		"missing last name":  {func(c *Config) { c.Profile.LastName = "" }, "last_name"},
+		"missing email":      {func(c *Config) { c.Profile.Email = "" }, "email is required"},
+		"missing provider":   {func(c *Config) { c.Email.Provider = "" }, "provider is required"},
+		"missing from":       {func(c *Config) { c.Email.From = "" }, "from address is required"},
+		"unknown provider":   {func(c *Config) { c.Email.Provider = "sendgrid" }, "unknown provider"},
+		"missing smtp host":  {func(c *Config) { c.Email.SMTP.Host = "" }, "host is required"},
+		"missing smtp port":  {func(c *Config) { c.Email.SMTP.Port = 0 }, "port is required"},
+		"profile without id": {func(c *Config) { c.Profiles = []NamedProfile{{ID: "", Profile: c.Profile}} }, "needs an id"},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			cfg := validConfig()
+			tc.mutate(cfg)
+			err := cfg.Validate()
+			if err == nil {
+				t.Fatalf("expected %s to be rejected", name)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("error should mention %q, got: %v", tc.want, err)
+			}
+		})
+	}
+}
+
+// TestValidateRejectsDuplicateProfileIDs matters because the id is the key
+// every history row is written under: two profiles sharing one would silently
+// merge their send histories, and GetProfile would only ever return the first.
+func TestValidateRejectsDuplicateProfileIDs(t *testing.T) {
+	cfg := validConfig()
+	person := Profile{FirstName: "A", LastName: "B", Email: "a@example.com"}
+	cfg.Profiles = []NamedProfile{{ID: "me", Profile: person}, {ID: "ME", Profile: person}}
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("duplicate profile ids differing only in case were accepted")
+	}
+	if !strings.Contains(err.Error(), "duplicate") {
+		t.Errorf("error should say duplicate, got: %v", err)
+	}
+}
+
+func TestValidateInbox(t *testing.T) {
+	full := func() *Config {
+		c := validConfig()
+		c.Inbox = InboxConfig{Enabled: true, Email: "me@example.com", Password: "app-password", Server: "imap.example.com", Port: 993}
+		return c
+	}
+
+	if err := full().ValidateInbox(); err != nil {
+		t.Fatalf("a complete inbox config was rejected: %v", err)
+	}
+
+	cases := map[string]struct {
+		mutate func(*Config)
+		want   string
+	}{
+		"not enabled":      {func(c *Config) { c.Inbox.Enabled = false }, "not enabled"},
+		"missing email":    {func(c *Config) { c.Inbox.Email = "" }, "email address is required"},
+		"missing password": {func(c *Config) { c.Inbox.Password = "" }, "password"},
+		"missing server":   {func(c *Config) { c.Inbox.Server = "" }, "IMAP server is required"},
+		"missing port":     {func(c *Config) { c.Inbox.Port = 0 }, "IMAP port is required"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			cfg := full()
+			tc.mutate(cfg)
+			err := cfg.ValidateInbox()
+			if err == nil {
+				t.Fatalf("expected %s to be rejected", name)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("error should mention %q, got: %v", tc.want, err)
+			}
+		})
+	}
+}
+
+func TestDefaultConfigPath(t *testing.T) {
+	got := DefaultConfigPath()
+	if !strings.HasSuffix(got, "config.yaml") {
+		t.Errorf("DefaultConfigPath = %q, expected it to end in config.yaml", got)
+	}
+	if got != "config.yaml" && !strings.Contains(got, ".eraser") {
+		t.Errorf("DefaultConfigPath = %q, expected it under .eraser or the documented fallback", got)
 	}
 }
