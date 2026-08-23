@@ -46,6 +46,23 @@ read the actual emails a run produced, which is usually the fastest way to
 understand a failure. The last few runs are retained and older ones are pruned
 automatically, so this directory doesn't grow without bound.
 
+## The resume spec starts its own server
+
+`tests/05-resume.spec.ts` is the exception to everything above: it spawns its
+own `eraser serve` on port 8100 (override with `ERASER_E2E_RESUME_PORT`),
+seeded with a `config.yaml` and a `pending_job.json` already on disk.
+
+It has to. Auto-resume is a startup event, firing two seconds after boot, and
+Playwright's managed server starts once before any test - there is no way to
+restart it mid-run with a pending job waiting. A resumed job is also only
+visible via `/api/job/active` *while it is running*: once it finishes or
+pauses there is no route that can find it again, because its id is generated
+at resume time. So the spec owns the process lifecycle and catches the job in
+flight.
+
+Each case gets its own workspace under `.artifacts/`, so it cannot disturb
+the main suite's capture directory.
+
 ## Capture mode
 
 `--capture-dir` makes the app record every message instead of transmitting it.
