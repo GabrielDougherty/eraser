@@ -34,6 +34,66 @@ jobs:
       - name: Test
         run: go test -race ./...
 
+  e2e:
+    # Kept separate from build-test so a browser-test flake never masks the Go
+    # signal, and so `go test ./...` stays fast and browser-free.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.26"
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: e2e/package-lock.json
+
+      - name: Install dependencies
+        working-directory: e2e
+        run: npm ci
+
+      - name: Resolve Playwright version
+        id: pw
+        working-directory: e2e
+        run: echo "version=$(node -p "require('@playwright/test/package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          # Keyed on the exact Playwright version: a cached browser build from
+          # a different version fails at runtime with "Executable doesn't
+          # exist", which is a confusing way to learn the cache is stale.
+          key: playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}
+
+      - name: Install Chromium
+        working-directory: e2e
+        run: npx playwright install --with-deps chromium
+
+      - name: Typecheck
+        working-directory: e2e
+        run: npm run typecheck
+
+      # No separate `go build` step - playwright.config.ts builds the binary
+      # itself, so CI and local runs go through the same path.
+      - name: Run end-to-end tests
+        working-directory: e2e
+        run: npm test
+
+      - name: Upload report and captured mail
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-failure-artifacts
+          path: |
+            e2e/playwright-report
+            e2e/test-results
+            e2e/.artifacts
+          retention-days: 7
+
   lint:
     runs-on: ubuntu-latest
     steps:
