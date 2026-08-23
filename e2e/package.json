@@ -1,0 +1,17 @@
+{
+  "name": "eraser-e2e",
+  "private": true,
+  "type": "module",
+  "description": "End-to-end browser tests for eraser, run separately from the Go test suite.",
+  "scripts": {
+    "test": "playwright test",
+    "test:ui": "playwright test --ui",
+    "report": "playwright show-report",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.56.1",
+    "@types/node": "24.9.2",
+    "typescript": "5.9.3"
+  }
+}

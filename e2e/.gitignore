@@ -1,0 +1,7 @@
+node_modules/
+.bin/
+.artifacts/
+playwright-report/
+test-results/
+blob-report/
+*.eml

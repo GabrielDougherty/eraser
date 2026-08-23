@@ -1,0 +1,55 @@
+# Broker fixture for the end-to-end suite.
+#
+# Every address is on a .invalid TLD (RFC 2606, permanently unresolvable), so
+# even a catastrophic mis-wiring that reached a real SMTP server could not
+# deliver to anyone. net/mail.ParseAddress is syntax-only, so these still pass
+# the same validation real addresses do and are captured normally.
+#
+# The mix is deliberate: four sendable brokers and two with no address, so
+# "skipped == 2" in the send-all assertions is a real signal rather than a
+# coincidence of a single missing value.
+brokers:
+    - id: e2e-alpha
+      name: Alpha Data
+      email: privacy@alpha.invalid
+      website: https://alpha.invalid
+      region: eu
+      category: people-search
+    - id: e2e-bravo
+      name: Bravo Marketing
+      email: privacy@bravo.invalid
+      website: https://bravo.invalid
+      region: us
+      category: marketing
+    - id: e2e-charlie
+      name: Charlie Checks
+      email: privacy@charlie.invalid
+      website: https://charlie.invalid
+      region: global
+      category: background-check
+      requires_id: true
+    # No email, but an opt-out form: skipped by a send, and the UI should
+    # offer the form link instead.
+    - id: e2e-delta
+      name: Delta Records
+      email: ""
+      website: https://delta.invalid
+      opt_out_url: https://delta.invalid/opt-out
+      region: us
+      category: people-search
+    # No email and no form: skipped, with nothing to link to.
+    - id: e2e-echo
+      name: Echo Append
+      email: ""
+      website: https://echo.invalid
+      region: eu
+      category: data-append
+      notes: No public contact; postal request only.
+    # "Zzz" appears in no other fixture name, so a search for it matches
+    # exactly one row.
+    - id: e2e-foxtrot
+      name: Foxtrot Zzz Data
+      email: privacy@foxtrot.invalid
+      website: https://foxtrot.invalid
+      region: eu
+      category: people-search
