@@ -148,9 +148,19 @@ func runSend() error {
 		return fmt.Errorf("failed to initialize templates: %w", err)
 	}
 
-	// Initialize email sender (unless dry-run)
+	// Initialize email sender (unless dry-run). Capture mode still builds a
+	// sender and runs the full send path - unlike --dry-run, which skips
+	// history recording entirely - so a captured run leaves the same trail a
+	// real one would.
+	capture, err := newCaptureSenderIfRequested()
+	if err != nil {
+		return err
+	}
 	var sender email.Sender
-	if !cfg.Options.DryRun {
+	switch {
+	case capture != nil:
+		sender = capture
+	case !cfg.Options.DryRun:
 		sender, err = email.NewSender(cfg.Email)
 		if err != nil {
 			return fmt.Errorf("failed to initialize email sender: %w", err)

@@ -58,6 +58,7 @@ send via Gmail SMTP.`,
 	// Global flags
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is $HOME/.eraser/config.yaml)")
 	rootCmd.PersistentFlags().StringVar(&brokerFile, "brokers", "", "broker database file (default is ./data/brokers.yaml)")
+	rootCmd.PersistentFlags().StringVar(&captureDir, "capture-dir", "", "Record outgoing email to this directory instead of sending it (also set by ERASER_CAPTURE_DIR)")
 	rootCmd.PersistentFlags().StringVar(&profileFlag, "profile", "", "Profile ID to operate as (default: the only configured profile; required if you've configured more than one via 'eraser profile add')")
 
 	// Add commands

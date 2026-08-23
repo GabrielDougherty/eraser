@@ -49,7 +49,7 @@ func (s *Server) resumePendingJob(state *PersistentJobState) {
 	}
 
 	// Create email sender
-	sender, err := email.NewSender(cfg.Email)
+	sender, err := s.newSender(cfg.Email)
 	if err != nil {
 		log.Printf("Cannot resume job: failed to create email sender: %v", err)
 		_ = s.jobPersistence.Clear()
@@ -123,7 +123,7 @@ func (s *Server) handleAPISendOne(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Create email sender
-	sender, err := email.NewSender(cfg.Email)
+	sender, err := s.newSender(cfg.Email)
 	if err != nil {
 		_, _ = fmt.Fprintf(w, `<span class="text-red-600">Error: %s</span>`, template.HTMLEscapeString(err.Error()))
 		return
@@ -246,7 +246,7 @@ func (s *Server) handleAPISendAll(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Create email sender (validate config before starting job)
-	sender, err := email.NewSender(cfg.Email)
+	sender, err := s.newSender(cfg.Email)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})

@@ -750,6 +750,15 @@
         </div>
     </nav>
 
+    <!-- Capture-mode banner: shown only when the server was started with
+         --capture-dir, so a run that records mail instead of sending it is
+         never mistaken for a real one. -->
+    {{if .CaptureDir}}
+    <div role="status" class="text-center text-sm py-2 px-4" style="background: rgba(234, 179, 8, 0.12); color: var(--warning); border-bottom: 1px solid rgba(234, 179, 8, 0.3);">
+        <strong>Capture mode</strong> &mdash; no email is being sent. Messages are written to <code>{{.CaptureDir}}</code>
+    </div>
+    {{end}}
+
     <!-- Main content -->
     <main class="max-w-6xl mx-auto pt-8 pb-12 px-4">
         {{template "content" .}}

@@ -19,6 +19,7 @@ import (
 
 	"github.com/eraser-privacy/eraser/internal/broker"
 	"github.com/eraser-privacy/eraser/internal/config"
+	"github.com/eraser-privacy/eraser/internal/email"
 	"github.com/eraser-privacy/eraser/internal/history"
 	emaTemplate "github.com/eraser-privacy/eraser/internal/template"
 	"github.com/go-chi/chi/v5"
@@ -115,6 +116,10 @@ type Server struct {
 	jobManager     *JobManager
 	jobPersistence *JobPersistence
 	noBrowser      bool
+	senderFactory  email.Factory
+	// captureDir is set when sends are being recorded rather than
+	// transmitted; "" means this server sends for real. Surfaced in the UI.
+	captureDir string
 }
 
 func NewServer(port int, cfg *config.Config, configPath string, brokerDB *broker.BrokerDatabase, historyStore *history.Store, tmplEngine *emaTemplate.Engine, opts ...Option) (*Server, error) {
@@ -145,6 +150,7 @@ func NewServer(port int, cfg *config.Config, configPath string, brokerDB *broker
 		rateLimiter:    NewRateLimiter(defaultRateLimit, defaultRateWindow),
 		jobManager:     NewJobManager(),
 		jobPersistence: NewJobPersistence(dataDir),
+		senderFactory:  email.NewSender,
 	}
 	s.config.Store(cfg)
 
@@ -158,6 +164,14 @@ func NewServer(port int, cfg *config.Config, configPath string, brokerDB *broker
 	}
 	s.templates = tmpl
 	return s, nil
+}
+
+// newSender builds an email sender for the given configuration. Every send
+// path goes through here rather than calling email.NewSender directly, so a
+// server constructed WithSenderFactory or WithCaptureSender intercepts all of
+// them at once.
+func (s *Server) newSender(cfg config.EmailConfig) (email.Sender, error) {
+	return s.senderFactory(cfg)
 }
 
 // getConfig returns the server's current config. Server.config is an
@@ -683,6 +697,9 @@ func (s *Server) renderWithCSRF(w http.ResponseWriter, r *http.Request, name str
 	data["Profiles"] = profiles
 	data["ActiveProfile"] = s.activeProfile(r)
 	data["CurrentPath"] = r.URL.Path
+	// Non-empty only in capture mode. Rendered as a banner so a server that
+	// isn't really sending can never be mistaken for one that is.
+	data["CaptureDir"] = s.captureDir
 
 	tmpl, ok := s.templates[name]
 	if !ok {

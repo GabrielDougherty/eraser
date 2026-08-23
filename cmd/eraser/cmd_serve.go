@@ -78,6 +78,13 @@ func runServe(port int, noBrowser bool) error {
 	if noBrowser {
 		opts = append(opts, web.WithNoBrowser())
 	}
+	capture, err := newCaptureSenderIfRequested()
+	if err != nil {
+		return err
+	}
+	if capture != nil {
+		opts = append(opts, web.WithCaptureSender(capture))
+	}
 
 	server, err := web.NewServer(port, cfg, configPath, brokerDB, store, tmplEngine, opts...)
 	if err != nil {

@@ -21,10 +21,38 @@ go test ./...
 ./eraser pipeline                      # which brokers need manual follow-up
 ./eraser confirm                       # click confirmation links from broker emails
 ./eraser fill                          # browser-automate opt-out forms
-./eraser serve [-p 3000]               # web UI
+./eraser serve [--port 3000] [--no-browser]  # web UI
 ./eraser profile list                  # list configured profiles
 ./eraser profile add                   # add a second/third named profile
 ```
+
+### Capture mode (`--capture-dir`)
+
+`--capture-dir <path>` is a global flag that puts the process in **capture
+mode**: `send` and the web UI render every message and record it to that
+directory instead of connecting to a mail server. Nothing is transmitted.
+
+```bash
+./eraser --config /tmp/trial/config.yaml --capture-dir /tmp/trial/captured serve --no-browser
+```
+
+Each message is written as a numbered `.eml` file holding exactly the bytes
+that would have gone to the SMTP server, alongside a `manifest.jsonl` with one
+JSON object per send for programmatic reading. `ERASER_CAPTURE_DIR` sets the
+same thing.
+
+Capture mode is louder than `--dry-run` about being on - it prints a startup
+warning and the web UI shows a banner on every page - because a run that
+silently isn't sending is as bad as one that silently is. It also differs from
+`--dry-run` in going through the *whole* send path, so history records, job
+progress and pipeline state all update as they would for a real run. That makes
+it what you want for trying the tool out or driving it from a test; `--dry-run`
+remains the way to preview which brokers would be contacted without touching
+history at all.
+
+Pair it with `--config` and `--brokers` pointed at a scratch directory to get a
+completely isolated instance: config, `history.db` and `pending_job.json` all
+live next to the config file.
 
 Every command above (except `profile`, `add-broker`, `list-brokers`) accepts a global `--profile <id>` flag. It can be omitted entirely for the common single-profile setup; it's required once more than one profile is configured. See [multi-profile.md](multi-profile.md) for the full model.
 

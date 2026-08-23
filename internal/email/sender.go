@@ -37,6 +37,14 @@ type Sender interface {
 	Name() string
 }
 
+// Factory builds a Sender from an email configuration. NewSender is the
+// production implementation; callers hold one of these rather than calling
+// NewSender directly so that a process started in capture mode can substitute
+// a recorder at every send site at once - including the setup wizard's test
+// send, which builds its config from the in-progress session rather than from
+// anything on disk.
+type Factory func(cfg config.EmailConfig) (Sender, error)
+
 func NewSender(cfg config.EmailConfig) (Sender, error) {
 	if cfg.Provider == "" || cfg.Provider == "smtp" {
 		return NewSMTPSender(cfg.SMTP, cfg.From), nil

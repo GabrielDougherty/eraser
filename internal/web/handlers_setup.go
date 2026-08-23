@@ -189,7 +189,7 @@ func (s *Server) handleSetupTestSend(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Create email sender with the session config
-	sender, err := email.NewSender(session.Email)
+	sender, err := s.newSender(session.Email)
 	if err != nil {
 		_, _ = fmt.Fprintf(w, `
 			<div class="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded">
