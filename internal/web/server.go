@@ -171,7 +171,50 @@ func NewServer(port int, cfg *config.Config, configPath string, brokerDB *broker
 // server constructed WithSenderFactory or WithCaptureSender intercepts all of
 // them at once.
 func (s *Server) newSender(cfg config.EmailConfig) (email.Sender, error) {
+	// An explicit --capture-dir wins: it was given for this run, whereas
+	// dry_run is persisted state that may be years old.
+	if s.captureDir != "" {
+		return s.senderFactory(cfg)
+	}
+
+	// options.dry_run was honoured only by the CLI. In the web UI it did
+	// nothing at all, so a config carrying dry_run: true would still send for
+	// real to every broker the moment someone pressed "Send to All". Route it
+	// to a recorder in a dry-run/ directory beside the config instead, so the
+	// setting means one thing everywhere: render and record, never transmit.
+	if cfg := s.getConfig(); cfg != nil && cfg.Options.DryRun {
+		dir := filepath.Join(s.dataDir(), "dry-run")
+		cs, err := email.NewCaptureSender(dir)
+		if err != nil {
+			return nil, err
+		}
+		return cs, nil
+	}
+
 	return s.senderFactory(cfg)
+}
+
+// dryRunCaptureDir reports where dry-run sends would be recorded, or "" when
+// dry run is off. Feeds the same banner capture mode uses: suppressing sends
+// silently is the failure this whole mechanism exists to avoid.
+func (s *Server) dryRunCaptureDir() string {
+	if s.captureDir != "" {
+		return ""
+	}
+	if cfg := s.getConfig(); cfg != nil && cfg.Options.DryRun {
+		return filepath.Join(s.dataDir(), "dry-run")
+	}
+	return ""
+}
+
+// dataDir is the directory the config file lives in, which is also where
+// history.db and pending_job.json are kept.
+func (s *Server) dataDir() string {
+	if s.configPath == "" {
+		home, _ := os.UserHomeDir()
+		return filepath.Join(home, ".eraser")
+	}
+	return filepath.Dir(s.configPath)
 }
 
 // getConfig returns the server's current config. Server.config is an
@@ -700,6 +743,9 @@ func (s *Server) renderWithCSRF(w http.ResponseWriter, r *http.Request, name str
 	// Non-empty only in capture mode. Rendered as a banner so a server that
 	// isn't really sending can never be mistaken for one that is.
 	data["CaptureDir"] = s.captureDir
+	if data["CaptureDir"] == "" {
+		data["CaptureDir"] = s.dryRunCaptureDir()
+	}
 
 	tmpl, ok := s.templates[name]
 	if !ok {

@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -169,5 +170,73 @@ func TestCaptureDirSurfacedToTemplates(t *testing.T) {
 	plain := newTestServer(t, captureTestConfig())
 	if plain.captureDir != "" {
 		t.Errorf("a server sending for real must report no capture dir, got %q", plain.captureDir)
+	}
+}
+
+// TestDryRunConfigSuppressesWebSends closes a real safety gap: options.dry_run
+// was read only by the CLI, so a config carrying dry_run: true still sent for
+// real to every broker the moment someone pressed "Send to All" in the web UI.
+func TestDryRunConfigSuppressesWebSends(t *testing.T) {
+	cfg := captureTestConfig()
+	cfg.Options.DryRun = true
+
+	s := newTestServer(t, cfg)
+	s.configPath = filepath.Join(t.TempDir(), "config.yaml")
+	s.brokerDB = &broker.BrokerDatabase{Brokers: []broker.Broker{
+		{ID: "alpha", Name: "Alpha Data", Email: "privacy@alpha.invalid"},
+	}}
+
+	req := withURLParam(httptest.NewRequest(http.MethodPost, "/api/send/alpha", nil), "brokerID", "alpha")
+	rec := httptest.NewRecorder()
+	s.handleAPISendOne(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// Nothing may have gone out; the message must be on disk instead. Without
+	// the fix this reaches the real SMTP sender and fails against smtp.invalid.
+	dir := filepath.Join(filepath.Dir(s.configPath), "dry-run")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("expected dry-run captures at %s: %v", dir, err)
+	}
+	var emls int
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".eml") {
+			emls++
+		}
+	}
+	if emls != 1 {
+		t.Errorf("expected 1 recorded message, got %d", emls)
+	}
+
+	// And it must say so in the UI rather than suppressing sends silently.
+	if s.dryRunCaptureDir() != dir {
+		t.Errorf("dryRunCaptureDir() = %q, want %q", s.dryRunCaptureDir(), dir)
+	}
+}
+
+// TestExplicitCaptureDirWinsOverDryRun pins the precedence: a directory given
+// for this run beats a dry_run flag persisted in a config file.
+func TestExplicitCaptureDirWinsOverDryRun(t *testing.T) {
+	cfg := captureTestConfig()
+	cfg.Options.DryRun = true
+
+	s, cs := newCaptureTestServer(t, cfg)
+	s.configPath = filepath.Join(t.TempDir(), "config.yaml")
+	s.brokerDB = &broker.BrokerDatabase{Brokers: []broker.Broker{
+		{ID: "alpha", Name: "Alpha Data", Email: "privacy@alpha.invalid"},
+	}}
+
+	req := withURLParam(httptest.NewRequest(http.MethodPost, "/api/send/alpha", nil), "brokerID", "alpha")
+	rec := httptest.NewRecorder()
+	s.handleAPISendOne(rec, req)
+
+	if got := len(cs.Messages()); got != 1 {
+		t.Errorf("expected the explicit capture dir to receive the message, got %d", got)
+	}
+	if s.dryRunCaptureDir() != "" {
+		t.Error("dry-run dir should be inert when an explicit capture dir is set")
 	}
 }

@@ -50,6 +50,12 @@ it what you want for trying the tool out or driving it from a test; `--dry-run`
 remains the way to preview which brokers would be contacted without touching
 history at all.
 
+`options.dry_run: true` in the config file now also suppresses sending in the
+web UI, recording to a `dry-run/` directory beside the config. Previously only
+the CLI honoured it, so a config with `dry_run: true` still sent for real to
+every broker as soon as you pressed "Send to All". An explicit `--capture-dir`
+takes precedence, since it was given for that specific run.
+
 Pair it with `--config` and `--brokers` pointed at a scratch directory to get a
 completely isolated instance: config, `history.db` and `pending_job.json` all
 live next to the config file.
