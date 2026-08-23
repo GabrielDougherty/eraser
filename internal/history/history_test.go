@@ -3,6 +3,7 @@ package history
 import (
 	"database/sql"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -619,5 +620,239 @@ func TestProfileIsolation_UpdateBrokerResponseBody(t *testing.T) {
 	got = findBrokerResponseByID(t, s, resp.ID)
 	if got == nil || got.EmailBody != "updated body" {
 		t.Errorf("expected body updated after same-profile call, got %+v", got)
+	}
+}
+
+// ==================== Deletion ====================
+//
+// These back destructive UI actions - History > "Clear failed", Settings >
+// Danger Zone > "Clear All History", and the pipeline's re-scan. Every one of
+// them is a DELETE whose safety rests entirely on its WHERE clause, and none
+// of them had a test. A missing profile_id predicate would quietly wipe a
+// second household member's records; a missing status predicate would take
+// successful sends along with the failures.
+
+func TestDeleteByStatusOnlyTouchesThatStatus(t *testing.T) {
+	s := newTestStore(t)
+	now := time.Now()
+
+	addRecord(t, s, "sent-one", StatusSent, now)
+	addRecord(t, s, "sent-two", StatusSent, now)
+	addRecord(t, s, "failed-one", StatusFailed, now)
+	addRecord(t, s, "failed-two", StatusFailed, now)
+
+	deleted, err := s.DeleteByStatus("", StatusFailed)
+	if err != nil {
+		t.Fatalf("DeleteByStatus: %v", err)
+	}
+	// The count is reported straight back to the user as "Deleted N", so a
+	// wrong number is a lie about what just happened to their data.
+	if deleted != 2 {
+		t.Errorf("reported %d deleted, expected 2", deleted)
+	}
+
+	_, sent, failed, err := s.GetStats("")
+	if err != nil {
+		t.Fatalf("GetStats: %v", err)
+	}
+	if sent != 2 {
+		t.Errorf("successful sends were destroyed: %d remain, expected 2", sent)
+	}
+	if failed != 0 {
+		t.Errorf("%d failed records survived the delete", failed)
+	}
+}
+
+func TestDeleteByStatusIsProfileScoped(t *testing.T) {
+	s := newTestStore(t)
+	now := time.Now()
+
+	addRecordForProfile(t, s, "me", "broker-a", StatusFailed, now)
+	addRecordForProfile(t, s, "spouse", "broker-b", StatusFailed, now)
+	addRecordForProfile(t, s, "spouse", "broker-c", StatusSent, now)
+
+	deleted, err := s.DeleteByStatus("me", StatusFailed)
+	if err != nil {
+		t.Fatalf("DeleteByStatus: %v", err)
+	}
+	if deleted != 1 {
+		t.Errorf("reported %d deleted, expected 1", deleted)
+	}
+
+	_, sent, failed, err := s.GetStats("spouse")
+	if err != nil {
+		t.Fatalf("GetStats: %v", err)
+	}
+	if sent != 1 || failed != 1 {
+		t.Errorf("clearing one profile's failures disturbed another: spouse has %d sent, %d failed", sent, failed)
+	}
+}
+
+func TestDeleteAllHistoryIsProfileScoped(t *testing.T) {
+	s := newTestStore(t)
+	now := time.Now()
+
+	addRecordForProfile(t, s, "me", "broker-a", StatusSent, now)
+	addRecordForProfile(t, s, "me", "broker-b", StatusFailed, now)
+	addRecordForProfile(t, s, "spouse", "broker-c", StatusSent, now)
+	addRecordForProfile(t, s, "spouse", "broker-d", StatusFailed, now)
+
+	deleted, err := s.DeleteAllHistory("me")
+	if err != nil {
+		t.Fatalf("DeleteAllHistory: %v", err)
+	}
+	if deleted != 2 {
+		t.Errorf("reported %d deleted, expected 2", deleted)
+	}
+
+	total, _, _, err := s.GetStats("me")
+	if err != nil {
+		t.Fatalf("GetStats(me): %v", err)
+	}
+	if total != 0 {
+		t.Errorf("%d of this profile's records survived", total)
+	}
+
+	// The whole point of the profile_id predicate.
+	spouseTotal, spouseSent, spouseFailed, err := s.GetStats("spouse")
+	if err != nil {
+		t.Fatalf("GetStats(spouse): %v", err)
+	}
+	if spouseTotal != 2 || spouseSent != 1 || spouseFailed != 1 {
+		t.Errorf("another profile's history was destroyed: %d records (%d sent, %d failed)", spouseTotal, spouseSent, spouseFailed)
+	}
+}
+
+func TestDeleteAllHistoryLeavesBrokerResponsesAlone(t *testing.T) {
+	s := newTestStore(t)
+	now := time.Now()
+
+	addRecordForProfile(t, s, "me", "broker-a", StatusSent, now)
+	if err := s.AddBrokerResponse(&BrokerResponse{
+		ProfileID: "me", BrokerID: "broker-a", BrokerName: "Broker A",
+		ResponseType: "success", EmailSubject: "Done", ReceivedAt: now,
+	}); err != nil {
+		t.Fatalf("AddBrokerResponse: %v", err)
+	}
+
+	if _, err := s.DeleteAllHistory("me"); err != nil {
+		t.Fatalf("DeleteAllHistory: %v", err)
+	}
+
+	// Two separate tables with separate meanings: what you sent, and what
+	// came back. Clearing send history must not silently discard evidence
+	// that a broker confirmed a deletion.
+	responses, err := s.GetBrokerResponses("me", "", false, 10)
+	if err != nil {
+		t.Fatalf("GetBrokerResponses: %v", err)
+	}
+	if len(responses) != 1 {
+		t.Errorf("clearing send history also removed %d broker response(s)", 1-len(responses))
+	}
+}
+
+func TestDeleteOnEmptyHistoryReportsZero(t *testing.T) {
+	s := newTestStore(t)
+
+	deleted, err := s.DeleteByStatus("", StatusFailed)
+	if err != nil {
+		t.Fatalf("DeleteByStatus on empty history: %v", err)
+	}
+	if deleted != 0 {
+		t.Errorf("reported %d deleted from an empty history", deleted)
+	}
+
+	deleted, err = s.DeleteAllHistory("")
+	if err != nil {
+		t.Fatalf("DeleteAllHistory on empty history: %v", err)
+	}
+	if deleted != 0 {
+		t.Errorf("reported %d deleted from an empty history", deleted)
+	}
+}
+
+// TestClearBrokerResponsesIsDeliberatelyGlobal pins behaviour that looks like
+// a profile-scoping bug and is not. Responses are classified out of one
+// shared inbox, so a full re-scan discards everything and re-derives it -
+// including other profiles' responses. Documented here so nobody "fixes" it
+// into a per-profile delete, which would leave the other profiles' responses
+// stale after a re-scan instead of rebuilt.
+func TestClearBrokerResponsesIsDeliberatelyGlobal(t *testing.T) {
+	s := newTestStore(t)
+	now := time.Now()
+
+	for _, profile := range []string{"me", "spouse"} {
+		if err := s.AddBrokerResponse(&BrokerResponse{
+			ProfileID: profile, BrokerID: "broker-a", BrokerName: "Broker A",
+			ResponseType: "success", EmailSubject: "Done", ReceivedAt: now,
+		}); err != nil {
+			t.Fatalf("AddBrokerResponse(%s): %v", profile, err)
+		}
+	}
+
+	if err := s.ClearBrokerResponses(); err != nil {
+		t.Fatalf("ClearBrokerResponses: %v", err)
+	}
+
+	all, err := s.GetAllBrokerResponses()
+	if err != nil {
+		t.Fatalf("GetAllBrokerResponses: %v", err)
+	}
+	if len(all) != 0 {
+		t.Errorf("expected a global clear, %d response(s) remain", len(all))
+	}
+}
+
+// ==================== Data directory isolation ====================
+
+// TestDBPathFor pins the contract that makes --config mean "a separate
+// instance of everything". The end-to-end suite depends on it entirely: each
+// run points --config at a scratch directory and expects its own history.db
+// there, rather than reaching into the real ~/.eraser and reading - or
+// worse, writing - a person's actual send history.
+func TestDBPathFor(t *testing.T) {
+	t.Run("lives beside the config file", func(t *testing.T) {
+		got := DBPathFor(filepath.Join("/tmp", "scratch", "config.yaml"))
+		want := filepath.Join("/tmp", "scratch", "history.db")
+		if got != want {
+			t.Errorf("DBPathFor = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("two config paths never share a database", func(t *testing.T) {
+		a := DBPathFor(filepath.Join("/tmp", "run-a", "config.yaml"))
+		b := DBPathFor(filepath.Join("/tmp", "run-b", "config.yaml"))
+		if a == b {
+			t.Errorf("separate config directories resolved to one database: %q", a)
+		}
+	})
+
+	t.Run("config file name is irrelevant", func(t *testing.T) {
+		// The database is named history.db regardless of what the config is
+		// called, so --config alt.yaml in the default directory still shares
+		// the default history rather than silently starting a fresh one.
+		a := DBPathFor(filepath.Join("/tmp", "same", "config.yaml"))
+		b := DBPathFor(filepath.Join("/tmp", "same", "other.yaml"))
+		if a != b {
+			t.Errorf("same directory produced different databases: %q vs %q", a, b)
+		}
+	})
+
+	t.Run("empty config path falls back to the default", func(t *testing.T) {
+		if got := DBPathFor(""); got != DefaultDBPath() {
+			t.Errorf("DBPathFor(\"\") = %q, want DefaultDBPath() %q", got, DefaultDBPath())
+		}
+	})
+}
+
+func TestDefaultDBPath(t *testing.T) {
+	got := DefaultDBPath()
+	if !strings.HasSuffix(got, "history.db") {
+		t.Errorf("DefaultDBPath = %q, expected it to end in history.db", got)
+	}
+	// Either ~/.eraser/history.db, or the bare fallback when there is no
+	// home directory. Both must be relative-free of surprises.
+	if got != "eraser_history.db" && !strings.Contains(got, ".eraser") {
+		t.Errorf("DefaultDBPath = %q, expected it under .eraser or the documented fallback", got)
 	}
 }
