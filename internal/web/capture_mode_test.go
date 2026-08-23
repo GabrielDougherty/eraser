@@ -1,6 +1,7 @@
 package web
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -8,10 +9,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/eraser-privacy/eraser/internal/broker"
 	"github.com/eraser-privacy/eraser/internal/config"
 	"github.com/eraser-privacy/eraser/internal/email"
+	"github.com/eraser-privacy/eraser/internal/history"
 )
 
 // newCaptureTestServer builds a server in capture mode plus the sender, so a
@@ -238,5 +241,127 @@ func TestExplicitCaptureDirWinsOverDryRun(t *testing.T) {
 	}
 	if s.dryRunCaptureDir() != "" {
 		t.Error("dry-run dir should be inert when an explicit capture dir is set")
+	}
+}
+
+// ==================== Destructive API handlers ====================
+//
+// The history layer's own tests prove DeleteByStatus and DeleteAllHistory
+// scope correctly by profile. These cover the layer above: that the handler
+// hands them the *right* profile. Getting the SQL right is no help if the
+// handler passes whichever profile it feels like.
+
+func TestDeleteFailedUsesTheActiveProfile(t *testing.T) {
+	store, err := history.NewStore(filepath.Join(t.TempDir(), "history.db"))
+	if err != nil {
+		t.Fatalf("history.NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	now := time.Now()
+	for _, profile := range []string{"me", "spouse"} {
+		if err := store.Add(&history.Record{
+			ProfileID: profile, BrokerID: "broker-" + profile, BrokerName: "B",
+			Email: "b@example.com", Template: "generic", Status: history.StatusFailed, SentAt: now,
+		}); err != nil {
+			t.Fatalf("seeding %s: %v", profile, err)
+		}
+	}
+
+	s := newTestServerWithHistory(t, testConfig("me", "spouse"), store)
+
+	// The active profile comes from the switcher cookie, so the request
+	// decides whose records are destroyed.
+	req := httptest.NewRequest(http.MethodDelete, "/api/history/failed", nil)
+	req.AddCookie(&http.Cookie{Name: activeProfileCookie, Value: "me"})
+	rec := httptest.NewRecorder()
+	s.handleAPIDeleteFailed(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var body struct {
+		Deleted int    `json:"deleted"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("response is not JSON: %v (%s)", err, rec.Body.String())
+	}
+	if body.Deleted != 1 {
+		t.Errorf("reported %d deleted, expected 1", body.Deleted)
+	}
+
+	_, _, failed, err := store.GetStats("spouse")
+	if err != nil {
+		t.Fatalf("GetStats(spouse): %v", err)
+	}
+	if failed != 1 {
+		t.Error("clearing the active profile's failures also cleared another profile's")
+	}
+}
+
+func TestDeleteAllHistoryUsesTheActiveProfile(t *testing.T) {
+	store, err := history.NewStore(filepath.Join(t.TempDir(), "history.db"))
+	if err != nil {
+		t.Fatalf("history.NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	now := time.Now()
+	for _, profile := range []string{"me", "spouse"} {
+		if err := store.Add(&history.Record{
+			ProfileID: profile, BrokerID: "broker-" + profile, BrokerName: "B",
+			Email: "b@example.com", Template: "generic", Status: history.StatusSent, SentAt: now,
+		}); err != nil {
+			t.Fatalf("seeding %s: %v", profile, err)
+		}
+	}
+
+	s := newTestServerWithHistory(t, testConfig("me", "spouse"), store)
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/history", nil)
+	req.AddCookie(&http.Cookie{Name: activeProfileCookie, Value: "spouse"})
+	rec := httptest.NewRecorder()
+	s.handleAPIDeleteAllHistory(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	spouseTotal, _, _, err := store.GetStats("spouse")
+	if err != nil {
+		t.Fatalf("GetStats(spouse): %v", err)
+	}
+	if spouseTotal != 0 {
+		t.Errorf("the active profile's history survived: %d records", spouseTotal)
+	}
+
+	myTotal, _, _, err := store.GetStats("me")
+	if err != nil {
+		t.Fatalf("GetStats(me): %v", err)
+	}
+	if myTotal != 1 {
+		t.Errorf("another profile's history was destroyed: %d records remain, expected 1", myTotal)
+	}
+}
+
+// TestDeleteHandlersReportDatabaseUnavailable covers the guard rather than
+// the delete: with no store these must fail loudly instead of reporting a
+// cheerful "Deleted 0 records" that reads as success.
+func TestDeleteHandlersReportDatabaseUnavailable(t *testing.T) {
+	s := newTestServer(t, testConfig())
+
+	for name, handler := range map[string]http.HandlerFunc{
+		"delete failed": s.handleAPIDeleteFailed,
+		"delete all":    s.handleAPIDeleteAllHistory,
+	} {
+		t.Run(name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			handler(rec, httptest.NewRequest(http.MethodDelete, "/api/history", nil))
+			if rec.Code != http.StatusInternalServerError {
+				t.Errorf("expected 500 with no database, got %d: %s", rec.Code, rec.Body.String())
+			}
+		})
 	}
 }
