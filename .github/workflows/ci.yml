@@ -4,6 +4,11 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Lets CI be re-run by hand from the Actions tab. Without this there is no
+  # "Run workflow" button at all, so the only way to get a run is to push -
+  # which is awkward when you have just enabled Actions on a fork, or want to
+  # retry a run that failed for an infrastructure reason.
+  workflow_dispatch:
 
 jobs:
   build-test:

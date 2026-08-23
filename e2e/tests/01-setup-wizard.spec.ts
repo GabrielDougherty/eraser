@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 import { existsSync, readFileSync } from "node:fs";
 import { readManifest } from "../support/captured";
-import { PROFILE } from "../support/setup";
+import { FIXTURE, PROFILE } from "../support/setup";
 import { workspaceFromEnv } from "../support/workspace";
 
 const ws = workspaceFromEnv();
@@ -91,5 +91,7 @@ test("the dashboard is reachable once configured", async ({ page }) => {
   // Positively assert the fixture is in use. Checking merely that "763" is
   // absent would also pass if the page failed to render a count at all.
   await expect(page.getByText("Total Brokers")).toBeVisible();
-  await expect(page.locator("a[href='/brokers']").getByText("6", { exact: true })).toBeVisible();
+  await expect(
+    page.locator("a[href='/brokers']").getByText(String(FIXTURE.brokers), { exact: true }),
+  ).toBeVisible();
 });

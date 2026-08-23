@@ -6,7 +6,7 @@ import {
   readCapturedBody,
   readManifest,
 } from "../support/captured";
-import { PROFILE, ensureSetupComplete } from "../support/setup";
+import { FIXTURE, PROFILE, ensureSetupComplete } from "../support/setup";
 import { workspaceFromEnv } from "../support/workspace";
 
 const ws = workspaceFromEnv();
@@ -36,15 +36,19 @@ test("the broker fixture is loaded, not the shipped database", async ({ page }) 
   // file would run against 763 real broker addresses - harmless in capture
   // mode, but slow and utterly baffling to debug.
   await page.goto("/brokers");
-  await expect(page.getByText("6 brokers in database")).toBeVisible();
-  await expect(page.getByText("Showing 6 of 6 brokers")).toBeVisible();
+  await expect(page.getByText(`${FIXTURE.brokers} brokers in database`)).toBeVisible();
+  await expect(
+    page.getByText(`Showing ${FIXTURE.brokers} of ${FIXTURE.brokers} brokers`),
+  ).toBeVisible();
 });
 
 test("brokers with no address offer no send button", async ({ page }) => {
   await page.goto("/brokers");
 
   // Two of the six have no email: one with an opt-out form, one without.
-  await expect(page.getByRole("row").filter({ hasText: "No email on file" })).toHaveCount(2);
+  await expect(
+    page.getByRole("row").filter({ hasText: "No email on file" }),
+  ).toHaveCount(FIXTURE.noAddress);
   await expect(page.getByRole("row", { name: /Delta Records/ })).toContainText("No email on file");
   await expect(page.getByRole("row", { name: /Echo Append/ })).toContainText("No email on file");
 });
@@ -53,15 +57,19 @@ test("filters narrow the broker list", async ({ page }) => {
   await page.goto("/brokers");
 
   await page.check("input[name='missing_email']");
-  await expect(page.getByText("Showing 2 of 6 brokers")).toBeVisible();
+  await expect(
+    page.getByText(`Showing ${FIXTURE.noAddress} of ${FIXTURE.brokers} brokers`),
+  ).toBeVisible();
   await page.uncheck("input[name='missing_email']");
-  await expect(page.getByText("Showing 6 of 6 brokers")).toBeVisible();
+  await expect(
+    page.getByText(`Showing ${FIXTURE.brokers} of ${FIXTURE.brokers} brokers`),
+  ).toBeVisible();
 
   // "Zzz" appears in exactly one fixture name. pressSequentially rather than
   // fill: the search box is wired to htmx's keyup trigger, and fill() sets the
   // value without dispatching key events, so the request would never fire.
   await page.locator("#broker-search").pressSequentially("zzz");
-  await expect(page.getByText("Showing 1 of 6 brokers")).toBeVisible();
+  await expect(page.getByText(`Showing 1 of ${FIXTURE.brokers} brokers`)).toBeVisible();
   // Scoped to the table row: the page renders a parallel set of mobile cards,
   // so a bare text match hits two elements.
   await expect(page.getByRole("row", { name: /Foxtrot Zzz Data/ })).toBeVisible();
@@ -103,20 +111,25 @@ test("send to all skips brokers with no address", async ({ page }) => {
   const { job_id: jobId, total } = (await response.json()) as { job_id: string; total: number };
 
   // Alpha was already sent above and the default filter is status=pending,
-  // so this run covers the remaining five.
-  expect(total).toBe(5);
+  // so this run covers the remaining six.
+  expect(total).toBe(6);
 
   // Terminal state only. Job.Complete() forces progress to 100 and the UI
   // polls every 1.5s, so asserting on intermediate percentages is a flake
   // generator.
   await expect(page.locator("#send-all-progress")).toContainText("Complete!");
-  await expect(page.locator("#send-all-progress")).toContainText("Sent 3 emails (0 failed)");
+  await expect(page.locator("#send-all-progress")).toContainText("Sent 3 emails (1 failed)");
 
   // The completion banner never mentions skips, so read them off the job.
   // page.request shares the browser's cookies, and a GET needs no CSRF token.
+  //
+  // The three numbers together are the point: failed and skipped are separate
+  // outcomes for separate reasons. Golf has a malformed address that reaches
+  // the sender and is rejected; Delta and Echo have no address at all and are
+  // never attempted. Counting either as the other would still add up to six.
   const status = await page.request.get(`/api/job/${jobId}/status`);
   const job = (await status.json()) as { sent: number; failed: number; skipped: number };
-  expect(job).toMatchObject({ sent: 3, failed: 0, skipped: 2 });
+  expect(job).toMatchObject({ sent: 3, failed: 1, skipped: 2 });
 });
 
 test("results are reflected across the UI", async ({ page }) => {
@@ -132,10 +145,20 @@ test("results are reflected across the UI", async ({ page }) => {
   await expect(page.locator("#status-e2e-alpha")).toContainText("Sent");
   await expect(page.locator("#status-e2e-delta")).toContainText("Never sent");
 
+  // A rejected address must read as Failed, not as never-attempted. These are
+  // different things to a user: one needs a corrected address, the other needs
+  // an opt-out form filled in by hand.
+  await expect(page.locator("#status-e2e-golf")).toContainText("Failed");
+  await expect(
+    page.getByRole("row").filter({ has: page.getByText("Failed", { exact: true }) }),
+  ).toHaveCount(1);
+
   await page.goto("/history");
   await expect(page.locator("#sent-count")).toHaveText("4");
-  await expect(page.locator("#failed-count")).toHaveText("0");
-  await expect(page.locator("#success-rate")).toContainText("100");
+  await expect(page.locator("#failed-count")).toHaveText("1");
+  // 4 of 5 attempts. The two skipped brokers were never attempted, so they
+  // must not drag the rate down.
+  await expect(page.locator("#success-rate")).toContainText("80");
 });
 
 test("every captured message is well formed and addressed to its own broker", async ({ page }) => {
@@ -150,6 +173,12 @@ test("every captured message is well formed and addressed to its own broker", as
   expect(new Set(capturedRecipients(ws.captureDir))).toEqual(
     new Set([PROFILE_EMAIL, ...SENDABLE]),
   );
+
+  // The rejected address left nothing behind. This is the capture sender's
+  // validation parity doing its job: it refuses exactly what SMTP refuses, so
+  // a message that could never have been transmitted is not sitting in the
+  // directory looking like one that was.
+  expect(capturedRecipients(ws.captureDir)).not.toContain("not-an-email");
   expect(captured.every((m) => m.to.trim() !== "")).toBe(true);
   expect(captured.map((m) => m.seq)).toEqual([1, 2, 3, 4, 5]);
 

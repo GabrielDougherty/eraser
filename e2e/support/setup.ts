@@ -1,5 +1,20 @@
 import type { Page } from "@playwright/test";
 
+/**
+ * Facts about fixtures/brokers.yaml that specs assert on. Kept here rather
+ * than inline so adding a broker means changing one number, not hunting for
+ * every "6 of 6" string across the suite - which is exactly what went wrong
+ * the first time a broker was added.
+ */
+export const FIXTURE = {
+  /** Total brokers in fixtures/brokers.yaml. */
+  brokers: 7,
+  /** Brokers with no address at all: skipped, never attempted. */
+  noAddress: 2,
+  /** Brokers with a malformed address: attempted, rejected by the sender. */
+  brokenAddress: 1,
+};
+
 /** The identity the suite configures. Shared so specs can assert on it. */
 export const PROFILE = {
   firstName: "Test",

@@ -45,6 +45,17 @@ brokers:
       region: eu
       category: data-append
       notes: No public contact; postal request only.
+    # A syntactically invalid address. It is non-empty, so it is not skipped -
+    # it reaches the sender and is rejected by the same validation SMTP
+    # applies, producing a genuine failed send. Without this every assertion
+    # in the suite would expect zero failures, leaving the failure path (red
+    # badge, failed count, Retry Failed) completely unexercised.
+    - id: e2e-golf
+      name: Golf Broken Address
+      email: not-an-email
+      website: https://golf.invalid
+      region: us
+      category: marketing
     # "Zzz" appears in no other fixture name, so a search for it matches
     # exactly one row.
     - id: e2e-foxtrot
