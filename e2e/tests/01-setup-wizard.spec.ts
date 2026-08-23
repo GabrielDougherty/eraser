@@ -1,19 +1,10 @@
 import { expect, test } from "@playwright/test";
 import { existsSync, readFileSync } from "node:fs";
 import { readManifest } from "../support/captured";
+import { PROFILE } from "../support/setup";
 import { workspaceFromEnv } from "../support/workspace";
 
 const ws = workspaceFromEnv();
-
-export const PROFILE = {
-  firstName: "Test",
-  lastName: "Persoon",
-  email: "e2e@example.com",
-  city: "Riga",
-  country: "Latvia",
-  smtpUsername: "e2e@example.com",
-  smtpPassword: "fixture-app-password",
-};
 
 test.describe.configure({ mode: "serial" });
 
