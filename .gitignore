@@ -57,3 +57,6 @@ browser-data/
 pending_job.json
 manual_review_*.xlsx
 _to_delete/
+
+# Written by the CI test step so skipped tests can be surfaced afterwards.
+test-output.txt

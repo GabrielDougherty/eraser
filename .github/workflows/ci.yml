@@ -37,7 +37,23 @@ jobs:
           fi
 
       - name: Test
-        run: go test -race ./...
+        # -v so skipped tests are visible. Without it a test that skips in CI
+        # is indistinguishable from one that passes: a Chrome-dependent test
+        # skipped here for weeks - because the runner had no usable browser -
+        # while failing on every developer machine that did. The package line
+        # said "ok" throughout.
+        run: |
+          set -o pipefail
+          go test -race -v ./... 2>&1 | tee test-output.txt
+
+      - name: Flag skipped tests
+        if: always()
+        run: |
+          if grep -E '^\s*--- SKIP' test-output.txt; then
+            echo "::warning::Tests listed above were skipped. A skip in CI reads the same as a pass - check these are skipping for a reason you accept."
+          else
+            echo "No tests were skipped."
+          fi
 
   e2e:
     # Kept separate from build-test so a browser-test flake never masks the Go
