@@ -161,6 +161,53 @@ test("results are reflected across the UI", async ({ page }) => {
   await expect(page.locator("#success-rate")).toContainText("80");
 });
 
+// This is the question a user actually asks before pressing the button a
+// second time: will it email everyone again? It must not. "Send to All"
+// defaults to the pending filter, which means brokers with no send record at
+// all - so a second run can only ever reach what the first one did not.
+//
+// Worth covering from the browser rather than only against the handler,
+// because the button passes no status and relies on the server's default.
+// A change to that default would be invisible to a handler test that sets
+// the filter explicitly.
+test("a second send to all does not re-send to anyone", async ({ page }) => {
+  const before = readManifest(ws.captureDir).length;
+
+  await page.goto("/brokers");
+  const [response] = await Promise.all([
+    page.waitForResponse((r) => r.url().includes("/api/send-all") && r.request().method() === "POST"),
+    page.getByRole("button", { name: "Send to All" }).click(),
+  ]);
+  const { job_id: jobId, total } = (await response.json()) as { job_id: string; total: number };
+
+  // Only the two brokers with no address remain unsent. Every broker that
+  // received a message the first time is excluded.
+  expect(total).toBe(FIXTURE.noAddress);
+
+  await expect(page.locator("#send-all-progress")).toContainText("Complete!");
+  await expect(page.locator("#send-all-progress")).toContainText("Sent 0 emails (0 failed)");
+
+  const status = await page.request.get(`/api/job/${jobId}/status`);
+  const job = (await status.json()) as { sent: number; failed: number; skipped: number };
+  expect(job).toMatchObject({ sent: 0, failed: 0, skipped: FIXTURE.noAddress });
+
+  // The decisive assertion: not one additional message left the machine.
+  expect(readManifest(ws.captureDir)).toHaveLength(before);
+});
+
+// The dashboard's "Send Removal Requests" is a link to the brokers page, not
+// a send. Worth pinning: a button of that name that quietly started emailing
+// 700 brokers from the dashboard would be a nasty surprise.
+test("the dashboard button navigates rather than sending", async ({ page }) => {
+  const before = readManifest(ws.captureDir).length;
+
+  await page.goto("/");
+  await page.getByRole("link", { name: /Send Removal Requests/ }).click();
+
+  await expect(page).toHaveURL(/\/brokers$/);
+  expect(readManifest(ws.captureDir)).toHaveLength(before);
+});
+
 test("every captured message is well formed and addressed to its own broker", async ({ page }) => {
   await page.goto("/");
 
