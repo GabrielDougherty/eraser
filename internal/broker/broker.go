@@ -117,8 +117,14 @@ func (db *BrokerDatabase) Add(broker Broker) error {
 	return nil
 }
 
-// FindByEmail finds a broker by their email address
+// FindByEmail finds a broker by their email address. An empty address never
+// matches: many brokers have no address on file at all, so looking one up by
+// "" would otherwise return whichever of them happens to come first, which is
+// never the answer the caller wanted.
 func (db *BrokerDatabase) FindByEmail(email string) *Broker {
+	if strings.TrimSpace(email) == "" {
+		return nil
+	}
 	email = strings.ToLower(email)
 	for i := range db.Brokers {
 		if strings.ToLower(db.Brokers[i].Email) == email {
@@ -128,9 +134,18 @@ func (db *BrokerDatabase) FindByEmail(email string) *Broker {
 	return nil
 }
 
-// RemoveByEmail removes a broker by their email address
-// Returns the removed broker, or nil if not found
+// RemoveByEmail removes a broker by their email address.
+// Returns the removed broker, or nil if not found.
+//
+// As with FindByEmail an empty address never matches, and here it matters
+// more: without the guard, RemoveByEmail("") would silently delete the first
+// broker that has no address on file. The one caller already refuses to act
+// on an empty address, but deleting data should not depend on every future
+// caller remembering to.
 func (db *BrokerDatabase) RemoveByEmail(email string) *Broker {
+	if strings.TrimSpace(email) == "" {
+		return nil
+	}
 	email = strings.ToLower(email)
 	for i := range db.Brokers {
 		if strings.ToLower(db.Brokers[i].Email) == email {
