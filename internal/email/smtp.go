@@ -22,35 +22,23 @@ func NewSMTPSender(cfg config.SMTPConfig, from string) *SMTPSender {
 func (s *SMTPSender) Name() string { return "smtp" }
 
 func (s *SMTPSender) Send(ctx context.Context, msg Message) Result {
-	if err := validateMessage(msg); err != nil {
+	if err := validateHeaders(msg); err != nil {
 		return Result{Success: false, Error: err}
-	}
-	// Reject headers with CRLF to prevent injection
-	if strings.ContainsAny(msg.Subject, "\r\n") {
-		return Result{Success: false, Error: fmt.Errorf("subject contains invalid characters")}
 	}
 
 	addr := fmt.Sprintf("%s:%d", s.config.Host, s.config.Port)
-
-	var message strings.Builder
-	fmt.Fprintf(&message, "From: %s\r\n", msg.From)
-	fmt.Fprintf(&message, "To: %s\r\n", msg.To)
-	fmt.Fprintf(&message, "Subject: %s\r\n", msg.Subject)
-	message.WriteString("MIME-Version: 1.0\r\n")
-	message.WriteString("Content-Type: text/plain; charset=utf-8\r\n")
-	message.WriteString("\r\n")
-	message.WriteString(msg.Body)
+	raw := buildRFC822(msg)
 
 	auth := smtp.PlainAuth("", s.config.Username, s.config.Password, s.config.Host)
 
 	var err error
 	if s.config.UseTLS {
-		err = s.sendWithTLS(addr, auth, msg.From, msg.To, []byte(message.String()))
+		err = s.sendWithTLS(addr, auth, msg.From, msg.To, raw)
 	} else {
 		if s.config.Username != "" {
 			return Result{Success: false, Error: fmt.Errorf("SMTP auth requires TLS")}
 		}
-		err = smtp.SendMail(addr, nil, msg.From, []string{msg.To}, []byte(message.String()))
+		err = smtp.SendMail(addr, nil, msg.From, []string{msg.To}, raw)
 	}
 	if err != nil {
 		return Result{Success: false, Error: sanitizeSMTPError(err)}
