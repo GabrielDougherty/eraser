@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/eraser-privacy/eraser/internal/config"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -239,5 +240,181 @@ func TestHandleSettingsProfileDeleteClearsActiveProfileCookie(t *testing.T) {
 	}
 	if !cleared {
 		t.Error("expected the active-profile cookie to be cleared after deleting the profile it pointed to")
+	}
+}
+
+// ==================== Profile list fields ====================
+
+func TestSplitLines(t *testing.T) {
+	cases := map[string]struct {
+		in   string
+		want []string
+	}{
+		"one per line":           {"a\nb\nc", []string{"a", "b", "c"}},
+		"windows line endings":   {"a\r\nb\r\n", []string{"a", "b"}},
+		"blank lines discarded":  {"a\n\n\nb\n", []string{"a", "b"}},
+		"surrounding whitespace": {"  a  \n\tb\t\n", []string{"a", "b"}},
+		"entries containing commas": {"12 Main St, Apt 4, Springfield\n9 Other Rd, Riga",
+			[]string{"12 Main St, Apt 4, Springfield", "9 Other Rd, Riga"}},
+		"empty input":     {"", nil},
+		"whitespace only": {"   \n\t\n  ", nil},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			got := splitLines(tc.in)
+			if len(got) != len(tc.want) {
+				t.Fatalf("got %q, want %q", got, tc.want)
+			}
+			for i := range tc.want {
+				if got[i] != tc.want[i] {
+					t.Errorf("entry %d: got %q, want %q", i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+}
+
+// TestProfileEditPreservesFieldsWithNoFormControl is the regression test for
+// the data-loss bug. buildProfileFromForm constructs a fresh config.Profile,
+// so every field the form doesn't carry was reset to its zero value on save:
+// editing a profile in the web UI silently erased name_variants,
+// additional_phones and date_of_birth. Those can only be set through
+// `eraser init`, and they exist precisely because brokers index people under
+// old identities - losing them makes removal requests less likely to match.
+func TestProfileEditPreservesFieldsWithNoFormControl(t *testing.T) {
+	cfg := testConfig()
+	cfg.Profile.NameVariants = []string{"Maris Ozolins", "M. Ozolins"}
+	cfg.Profile.AdditionalPhones = []string{"+371 20000000"}
+	cfg.Profile.DateOfBirth = "1985-03-14"
+
+	s := newTestServer(t, cfg)
+	s.configPath = filepath.Join(t.TempDir(), "config.yaml")
+
+	form := url.Values{
+		"first_name": {"Test"},
+		"last_name":  {"User"},
+		"email":      {"test@example.com"},
+	}
+	req := withURLParam(
+		httptest.NewRequest(http.MethodPost, "/settings/profiles/default/edit", strings.NewReader(form.Encode())),
+		"profileID", "default")
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	s.handleSettingsProfileEdit(rec, req)
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("expected 303, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	saved := s.getConfig().Profile
+	if len(saved.NameVariants) != 2 {
+		t.Errorf("name_variants was wiped by an edit: %q", saved.NameVariants)
+	}
+	if len(saved.AdditionalPhones) != 1 {
+		t.Errorf("additional_phones was wiped by an edit: %q", saved.AdditionalPhones)
+	}
+	if saved.DateOfBirth != "1985-03-14" {
+		t.Errorf("date_of_birth was wiped by an edit: %q", saved.DateOfBirth)
+	}
+}
+
+// TestProfileEditRoundTripsListFields covers the enhancement: the two list
+// fields with real value for matching are now editable, so an edit must be
+// able to add entries, change them, and remove them - not merely leave them
+// alone.
+func TestProfileEditRoundTripsListFields(t *testing.T) {
+	cfg := testConfig()
+	cfg.Profile.PreviousAddresses = []string{"1 Old Street, Springfield"}
+	cfg.Profile.AdditionalEmails = []string{"stale@example.com"}
+
+	s := newTestServer(t, cfg)
+	s.configPath = filepath.Join(t.TempDir(), "config.yaml")
+
+	submit := func(t *testing.T, addresses, emails string) config.Profile {
+		t.Helper()
+		form := url.Values{
+			"first_name":         {"Test"},
+			"last_name":          {"User"},
+			"email":              {"test@example.com"},
+			"previous_addresses": {addresses},
+			"additional_emails":  {emails},
+		}
+		req := withURLParam(
+			httptest.NewRequest(http.MethodPost, "/settings/profiles/default/edit", strings.NewReader(form.Encode())),
+			"profileID", "default")
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		rec := httptest.NewRecorder()
+		s.handleSettingsProfileEdit(rec, req)
+		if rec.Code != http.StatusSeeOther {
+			t.Fatalf("expected 303, got %d: %s", rec.Code, rec.Body.String())
+		}
+		return s.getConfig().Profile
+	}
+
+	t.Run("add and edit entries", func(t *testing.T) {
+		saved := submit(t,
+			"1 Old Street, Springfield\n2 Newer Road, Apt 5, Riga",
+			"stale@example.com\nwork@example.com")
+
+		if len(saved.PreviousAddresses) != 2 {
+			t.Fatalf("previous_addresses = %q, want 2 entries", saved.PreviousAddresses)
+		}
+		// Commas within an entry must not split it.
+		if saved.PreviousAddresses[1] != "2 Newer Road, Apt 5, Riga" {
+			t.Errorf("an address containing commas was split: %q", saved.PreviousAddresses[1])
+		}
+		if len(saved.AdditionalEmails) != 2 {
+			t.Errorf("additional_emails = %q, want 2 entries", saved.AdditionalEmails)
+		}
+	})
+
+	t.Run("remove entries", func(t *testing.T) {
+		saved := submit(t, "1 Old Street, Springfield", "")
+
+		if len(saved.PreviousAddresses) != 1 {
+			t.Errorf("previous_addresses = %q, want 1 entry after removing one", saved.PreviousAddresses)
+		}
+		if len(saved.AdditionalEmails) != 0 {
+			t.Errorf("clearing the textarea left %q behind", saved.AdditionalEmails)
+		}
+	})
+}
+
+// TestProfileEditFormShowsExistingListEntries covers the other half of
+// "editable": the values have to be rendered back into the textareas, or a
+// save would silently wipe whatever the user couldn't see.
+func TestProfileEditFormShowsExistingListEntries(t *testing.T) {
+	cfg := testConfig()
+	cfg.Profile.PreviousAddresses = []string{"1 Old Street, Springfield", "2 Newer Road, Riga"}
+	cfg.Profile.AdditionalEmails = []string{"old@example.com"}
+
+	s := newTestServer(t, cfg)
+	req := withURLParam(httptest.NewRequest(http.MethodGet, "/settings/profiles/default/edit", nil), "profileID", "default")
+	rec := httptest.NewRecorder()
+	s.handleSettingsProfileEdit(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		`name="previous_addresses"`,
+		`name="additional_emails"`,
+		"old@example.com",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the edit form does not show %q", want)
+		}
+	}
+
+	// Assert the exact textarea contents, separator included. A substring
+	// check would pass on any separator, but the separator is load-bearing:
+	// splitLines reads these back on the next save by splitting on newlines,
+	// so rendering them comma-joined would silently collapse every entry
+	// into one on the very next save.
+	wantAddresses := "1 Old Street, Springfield\n2 Newer Road, Riga"
+	if !strings.Contains(body, ">"+wantAddresses+"</textarea>") {
+		t.Errorf("previous addresses are not rendered one per line; want a textarea containing %q", wantAddresses)
 	}
 }

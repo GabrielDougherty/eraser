@@ -81,6 +81,14 @@
             </div>
         </div>
 
+        <div>
+            <label for="previous_addresses" class="label">Previous Addresses</label>
+            <textarea name="previous_addresses" id="previous_addresses" rows="4"
+                class="input"
+                placeholder="123 Old Street, Springfield&#10;45 Earlier Road, Apt 2, Riga">{{lines .Profile.PreviousAddresses}}</textarea>
+            <p class="mt-1 text-sm text-muted">One per line. Brokers often hold a record under an address you left years ago, and matching on it helps them find the right person to delete</p>
+        </div>
+
         <div class="grid grid-cols-2 gap-4">
             <div>
                 <label for="country" class="label">Country</label>
@@ -96,6 +104,14 @@
                     class="input"
                     placeholder="+1 (555) 123-4567">
             </div>
+        </div>
+
+        <div>
+            <label for="additional_emails" class="label">Other Email Addresses</label>
+            <textarea name="additional_emails" id="additional_emails" rows="3"
+                class="input"
+                placeholder="old.address@example.com&#10;work@example.com">{{lines .Profile.AdditionalEmails}}</textarea>
+            <p class="mt-1 text-sm text-muted">One per line. Old or work addresses you've signed up to things with - a broker may have indexed you under one of these rather than your current address</p>
         </div>
     </div>
 </div>

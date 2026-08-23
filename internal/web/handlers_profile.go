@@ -50,7 +50,31 @@ func (s *Server) handleAPISwitchProfile(w http.ResponseWriter, r *http.Request) 
 // (empty if valid) - factored out so the two handlers can't drift on what
 // "a valid profile" means, the way they previously did as two independent
 // copies of the same three checks.
-func buildProfileFromForm(r *http.Request) (config.Profile, map[string]string) {
+// splitLines turns a textarea's contents into a list, one entry per line,
+// discarding blank lines and surrounding whitespace. Newlines rather than a
+// delimiter character because these values legitimately contain commas and
+// semicolons - "12 Main St, Apt 4, Springfield" is one address, not three.
+func splitLines(s string) []string {
+	var out []string
+	for _, line := range strings.Split(s, "\n") {
+		if trimmed := strings.TrimSpace(line); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
+}
+
+// buildProfileFromForm builds a profile from the submitted form, carrying
+// over any field the form has no control for from existing.
+//
+// That carry-over is the whole point: this function constructs a fresh
+// config.Profile, so every field absent from the form was silently reset to
+// its zero value on save. Editing a profile through the web UI therefore
+// erased name_variants, additional_phones and date_of_birth - values a user
+// can only have set through `eraser init`, and which exist precisely because
+// brokers index people under old identities. Pass the profile being edited;
+// pass a zero Profile when creating a new one.
+func buildProfileFromForm(r *http.Request, existing config.Profile) (config.Profile, map[string]string) {
 	profile := config.Profile{
 		FirstName:  strings.TrimSpace(r.FormValue("first_name")),
 		MiddleName: strings.TrimSpace(r.FormValue("middle_name")),
@@ -62,6 +86,16 @@ func buildProfileFromForm(r *http.Request) (config.Profile, map[string]string) {
 		ZipCode:    strings.TrimSpace(r.FormValue("zip_code")),
 		Country:    strings.TrimSpace(r.FormValue("country")),
 		Phone:      strings.TrimSpace(r.FormValue("phone")),
+
+		// Editable as one-entry-per-line textareas.
+		PreviousAddresses: splitLines(r.FormValue("previous_addresses")),
+		AdditionalEmails:  splitLines(r.FormValue("additional_emails")),
+
+		// No form control yet, so they must be carried over rather than
+		// reconstructed - see the note above.
+		NameVariants:     existing.NameVariants,
+		AdditionalPhones: existing.AdditionalPhones,
+		DateOfBirth:      existing.DateOfBirth,
 	}
 
 	errors := make(map[string]string)
@@ -87,7 +121,7 @@ func buildProfileFromForm(r *http.Request) (config.Profile, map[string]string) {
 func (s *Server) handleSettingsProfileNew(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "POST" {
 		limitFormBody(w, r)
-		profile, errors := buildProfileFromForm(r)
+		profile, errors := buildProfileFromForm(r, config.Profile{})
 
 		if len(errors) > 0 {
 			s.renderWithCSRF(w, r, "settings/profile-new.html", map[string]interface{}{
@@ -151,7 +185,9 @@ func (s *Server) handleSettingsProfileEdit(w http.ResponseWriter, r *http.Reques
 
 	if r.Method == "POST" {
 		limitFormBody(w, r)
-		profile, errors := buildProfileFromForm(r)
+		// existing.Profile, not a zero value: this is an edit, so fields the
+		// form doesn't carry must survive it.
+		profile, errors := buildProfileFromForm(r, existing.Profile)
 
 		if len(errors) > 0 {
 			s.renderWithCSRF(w, r, "settings/profile-edit.html", map[string]interface{}{

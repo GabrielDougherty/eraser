@@ -60,6 +60,13 @@ Pair it with `--config` and `--brokers` pointed at a scratch directory to get a
 completely isolated instance: config, `history.db` and `pending_job.json` all
 live next to the config file.
 
+The web UI's profile form (setup wizard, Settings > Add/Edit Profile) covers
+name, email, address and phone, plus **previous addresses** and **other email
+addresses** as one-entry-per-line boxes - the two fields that most improve a
+broker's chance of finding the right record. `name_variants`,
+`additional_phones` and `date_of_birth` have no form control yet, so they are
+carried through an edit untouched; set them with `eraser init`.
+
 Every command above (except `profile`, `add-broker`, `list-brokers`) accepts a global `--profile <id>` flag. It can be omitted entirely for the common single-profile setup; it's required once more than one profile is configured. See [multi-profile.md](multi-profile.md) for the full model.
 
 ## Configuration

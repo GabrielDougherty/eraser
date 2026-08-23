@@ -252,6 +252,13 @@ func (s *Server) parseTemplates() (map[string]*template.Template, error) {
 		"add": func(a, b int) int {
 			return a + b
 		},
+		// lines renders a list field as one entry per line, for editing in a
+		// textarea. Newline-separated rather than comma- or
+		// semicolon-separated because these values contain both: a previous
+		// address is "12 Main St, Apt 4, Springfield".
+		"lines": func(items []string) string {
+			return strings.Join(items, "\n")
+		},
 	}
 
 	// Read layout template

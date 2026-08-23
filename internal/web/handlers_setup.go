@@ -25,7 +25,7 @@ func (s *Server) handleSetupWelcome(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleSetupProfile(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "POST" {
 		limitFormBody(w, r)
-		profile, errors := buildProfileFromForm(r)
+		profile, errors := buildProfileFromForm(r, config.Profile{})
 		profile.DateOfBirth = strings.TrimSpace(r.FormValue("dob"))
 
 		if len(errors) > 0 {
